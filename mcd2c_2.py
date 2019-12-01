@@ -148,7 +148,7 @@ class complex_type(generic_type):
         assign = c.wrap(c.assign(
             ret, c.fcall(f'walk_{self.postfix}', 'int', (src, max_len))
         ))
-        return c.inlineif(c.lth(assign, 0), 'return -1')
+        return c.inlineif(c.lth(assign, 0), c.returnval(-1))
 
 @mc_data_name('varint')
 class mc_varint(complex_type):
@@ -170,7 +170,7 @@ class mc_restbuffer(complex_type):
     postfix = 'buffer'
 
     def dec_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_restbuffer dec_line unimplemented')
 
     def size_line(self, ret, field):
         pass
@@ -196,7 +196,7 @@ class memory_type(complex_type):
                 f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
             )
         ), True)
-        return c.inlineif(assign, 'return -1')
+        return c.inlineif(assign, c.returnval(-1))
 
     def free_line(self, field):
         return c.statement(
@@ -287,7 +287,7 @@ class mc_buffer(custom_type, memory_type):
         pass
 
     def dec_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_buffer dec_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size):
         seq = c.sequence()
@@ -296,7 +296,7 @@ class mc_buffer(custom_type, memory_type):
         )
         if isinstance(self.ln, numeric_type):
             seq.append(c.inlineif(
-                c.lth(max_len, self.ln.size), 'return -1')
+                c.lth(max_len, self.ln.size), c.returnval(-1))
             )
             seq.append(c.statement(c.addeq(size, self.ln.size)))
             seq.append(c.statement(c.subeq(max_len, self.ln.size)))
@@ -306,7 +306,7 @@ class mc_buffer(custom_type, memory_type):
             seq.append(c.statement(c.subeq(max_len, ret)))
         seq.append(c.statement(lenvar.decl))
         seq.append(self.ln.dec_line(src, lenvar, src))
-        seq.append(c.inlineif(c.lth(max_len, lenvar), 'return -1'))
+        seq.append(c.inlineif(c.lth(max_len, lenvar), c.returnval(-1)))
         seq.append(c.statement(c.addeq(size, lenvar)))
         seq.append(c.statement(c.addeq(src, lenvar)))
         seq.append(c.statement(c.subeq(max_len, lenvar)))
@@ -360,7 +360,7 @@ class mc_array(custom_type, memory_type):
         pass
 
     def dec_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_array dec_line unimplemented')
 
     def size_line(self, ret, field):
         pass
@@ -375,7 +375,7 @@ class mc_array(custom_type, memory_type):
             )
             if isinstance(self.count, numeric_type):
                 seq.append(c.inlineif(
-                    c.lth(max_len, self.count.size), 'return -1')
+                    c.lth(max_len, self.count.size), c.returnval(-1))
                 )
                 seq.append(c.statement(c.addeq(size, self.count.size)))
                 seq.append(c.statement(c.subeq(max_len, self.count.size)))
@@ -390,7 +390,7 @@ class mc_array(custom_type, memory_type):
         if hasattr(self.base, 'size') and not self.base.size is None:
             seq.append(c.inlineif(
                 c.lth(max_len, c.mulop(count_var, self.base.size)),
-                'return -1'
+                c.returnval(-1)
             ))
             seq.append(c.statement(c.addeq(
                 size, c.mulop(count_var, self.base.size)
@@ -491,7 +491,7 @@ class mc_container(custom_type):
         pass
 
     def dec_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_container dec_line unimplemented')
 
     def size_line(self, ret, field):
         pass
@@ -566,7 +566,7 @@ class mc_option(custom_type):
         pass
 
     def dec_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_option dec_line unimplemented')
 
     def size_line(self, ret, field):
         pass
@@ -721,7 +721,7 @@ class mc_switch(custom_type):
         pass
 
     def dec_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_switch dec_line unimplemented')
 
     def size_line(self, ret, field):
         pass
@@ -850,7 +850,7 @@ class mc_bitfield(custom_type, numeric_type):
         pass
 
     def dec_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_bitfield dec_line unimplemented')
 
     def size_line(self, ret, field):
         pass
@@ -884,11 +884,11 @@ class mc_particledata(custom_type, memory_type):
     postfix = 'particledata'
 
     def dec_line(self, ret, dest, src, part_type):
-        return c.statement(
-            c.assign(
-                ret, c.fcall(f'dec_{self.postfix}', (dest, src, part_type))
+        return c.statement(c.assign(
+            ret, c.fcall(
+                f'dec_{self.postfix}', 'char *', (dest, src, part_type)
             )
-        )
+        ))
 
     def walk_line(self, ret, src, max_len, size):
         return c.linecomment('particledata not yet implemented')
@@ -1043,17 +1043,30 @@ class packet:
         if not self.complex:
             position, total = group_numerics(self.fields, 0)
             return c.linesequence((
-                c.fdecl(f'size_{self.full_name}', 'size_t', (pak.decl,)),
+                c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)),
                 c.block((c.returnval(total),))
             ))
         blk = c.block([c.linecomment('Complex sizefunc unimplemented')])
         blk.append(c.returnval(0))
         return c.linesequence((
-            c.fdecl(f'size_{self.full_name}', 'size_t', (pak.decl,)), blk
+            c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)), blk
         ))
 
     def gen_decfunc(self):
-        pass
+        dest = c.variabledecl('packet', self.full_name)
+        destptr = c.variabledecl('*packet', self.full_name)
+        src = c.variable('source', 'char *')
+        blk = c.block()
+        for field in self.fields:
+            if not isinstance(field, custom_type) and not isinstance(field, memory_type):
+                v = c.variable(f'{dest.name}->{field.name}', field.typename)
+                blk.append(field.dec_line(src, v, src))
+            else:
+                blk.append(c.linecomment('custom_type unimplemented'))
+        blk.append(c.returnval(src))
+        return c.linesequence((
+            c.fdecl(f'dec_{self.full_name}', 'char *', (destptr, src.decl)), blk
+        ))
 
     def gen_encfunc(self):
         pass
@@ -1104,6 +1117,8 @@ def run(version):
             impl.append(p.gen_walkfunc())
             impl.append(c.blank())
             impl.append(p.gen_sizefunc())
+            impl.append(c.blank())
+            impl.append(p.gen_decfunc())
 
     fp = open(hdr.path, 'w+')
     fp.write(str(hdr))

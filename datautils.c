@@ -10,6 +10,8 @@
 #include <string.h>
 
 // 2^30, when we need a max_len but we're sure we wont overflow
+// What we really need is an "unsafe" version of functions we're passing this
+// to
 #define NO_OVERFLOW 1073741824
 
 // Warning: Some deeply monotonous code is in this file.
