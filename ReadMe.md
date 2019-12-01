@@ -1,4 +1,4 @@
-#mcd2c
+# mcd2c
 
 Generate C serialization/deserialization code from the minecraft-data protodef protocol spec
 
