@@ -1,15 +1,470 @@
-# This is an old version of mcd2c kept around for reference only while I get
-# mcd2c_2 working. No development should be done on this file
+# Midway upon the journey of our life
+# I found myself within a forest dark,
+# For the straight-forward pathway had been lost.
 
 import cfile as c
-import minecraft_data
+
+# General ToDo:
+#   ! cfile needs better pointer support
+#   ! cfile's fcall is a constant source of bugs because of the return type
+#     argument being where most cfile classes put their "elems" argument, and
+#     the "arguments" parameter being optional
+#   ! Division of concerns between cfile variables and mcd2c types is bad
+#     you can easily str()-ify cfile variables, but not mcd2c types
+#   ! Switched strings leak memory if a walk fails, need a goto failure mode
+
+mcd_typemap = {}
+def mc_data_name(typename):
+    def inner(cls):
+        mcd_typemap[typename] = cls
+        return cls
+    return inner
+
+
+class generic_type:
+    typename = ''
+    postfix = ''
+
+    def __init__(self, name, parent):
+        self._name = name
+        self.parent = parent
+        self.internal = c.variable(name, self.typename)
+        self.switched = False
+
+    def struct_line(self):
+        return c.statement(self.internal.decl)
+
+    def enc_line(self, ret, dest, src):
+        return c.statement(c.assign(
+            ret, c.fcall(f'enc_{self.postfix}', 'char *', (dest, src))
+        ))
+
+    def dec_line(self, ret, dest, src):
+        return c.statement(c.assign(ret, c.fcall(
+            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
+        )))
+
+    def __eq__(self, value):
+        return self.typename == value.typename
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, name):
+        self.internal.name = name
+        self._name = name
+
+class numeric_type(generic_type):
+    size = 0
+
+# Why does this even need to exist?
+@mc_data_name('void')
+class void_type(numeric_type):
+    typename = 'void'
+    def struct_line(self):
+        return c.linecomment(f'\'{self.name}\' is a void type')
+
+    def enc_line(self, ret, dest, src):
+        return c.linecomment(f'\'{self.name}\' is a void type')
+
+    def dec_line(self, ret, dest, src):
+        return c.linecomment(f'\'{self.name}\' is a void type')
+
+@mc_data_name('u8')
+class num_u8(numeric_type):
+    size = 1
+    typename = 'uint8_t'
+    postfix = 'byte'
+
+@mc_data_name('i8')
+class num_i8(num_u8):
+    typename = 'int8_t'
+
+@mc_data_name('bool')
+class num_bool(num_u8):
+    pass
+
+@mc_data_name('u16')
+class num_u16(numeric_type):
+    size = 2
+    typename = 'uint16_t'
+    postfix = 'be16'
+
+@mc_data_name('i16')
+class num_i16(num_u16):
+    typename = 'int16_t'
+
+@mc_data_name('u32')
+class num_u32(numeric_type):
+    size = 4
+    typename = 'uint32_t'
+    postfix = 'be32'
+
+@mc_data_name('i32')
+class num_i32(num_u32):
+    typename = 'int32_t'
+
+@mc_data_name('u64')
+class num_u64(numeric_type):
+    size = 8
+    typename = 'uint64_t'
+    postfix = 'be64'
+
+@mc_data_name('i64')
+class num_i64(num_u64):
+    typename = 'int64_t'
+
+@mc_data_name('f32')
+class num_float(num_u32):
+    typename = 'float'
+    postfix = 'bef32'
+
+@mc_data_name('f64')
+class num_double(num_u64):
+    typename = 'double'
+    postfix = 'bef64'
+
+# Positions and UUIDs are broadly similar to numeric types
+@mc_data_name('position')
+class num_position(num_u64):
+    typename = 'mc_position'
+    postfix = 'position'
+
+@mc_data_name('UUID')
+class num_uuid(numeric_type):
+    size = 16
+    typename = 'mc_uuid'
+    postfix = 'uuid'
+
+class complex_type(generic_type):
+    def size_line(self, ret, field):
+        return c.statement(
+            c.addeq(ret, c.fcall(f'size_{self.postfix}', (field,)))
+        )
+
+    def walk_line(self, ret, src, max_len):
+        assign = c.wrap(c.assign(
+            ret, c.fcall(f'walk_{self.postfix}', 'int', (src, max_len))
+        ))
+        return c.inlineif(c.lth(assign, 0), c.returnval(-1))
+
+@mc_data_name('varint')
+class mc_varint(complex_type):
+    # typename = 'int32_t'
+    # postfix = 'varint'
+    # All varints are varlongs until this gets fixed
+    # https://github.com/PrismarineJS/minecraft-data/issues/119
+    typename = 'int64_t'
+    postfix = 'varlong'
+
+@mc_data_name('varlong')
+class mc_varlong(complex_type):
+    typename = 'int64_t'
+    postfix = 'varlong'
+
+# Types which require some level of memory management
+class memory_type(complex_type):
+    def dec_line(self, ret, dest, src):
+        assign = c.wrap(c.assign(ret, c.fcall(
+            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
+        )), True)
+        return c.inlineif(assign, c.returnval('NULL'))
+
+    def walkdec_line(self, ret, dest, src):
+        assign = c.wrap(c.assign(ret, c.fcall(
+            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
+        )), True)
+        return c.inlineif(assign, c.returnval(-1))
+
+    def free_line(self, field):
+        return c.statement(
+            c.fcall(f'free_{self.postfix}', 'void', (field.name,))
+        )
+
+@mc_data_name('string')
+class mc_string(memory_type):
+    typename = 'sds'
+    postfix = 'string'
+
+@mc_data_name('nbt')
+class mc_nbt(memory_type):
+    typename = 'nbt_node *'
+    postfix = 'nbt'
+
+@mc_data_name('optionalNbt')
+class mc_optnbt(memory_type):
+    typename = 'nbt_node *'
+    postfix = 'optnbt'
+
+@mc_data_name('slot')
+class mc_slot(memory_type):
+    typename = 'mc_slot'
+    postfix = 'slot'
+
+@mc_data_name('ingredient')
+class mc_ingredient(memory_type):
+    typename = 'mc_ingredient'
+    postfix = 'ingredient'
+
+@mc_data_name('entityMetadata')
+class mc_metadata(memory_type):
+    typename = 'mc_metadata'
+    postfix = 'metadata'
+
+@mc_data_name('tags')
+class mc_itemtag_array(memory_type):
+    typename = 'mc_itemtag_array'
+    postfix = 'itemtag_array'
+
+@mc_data_name('minecraft_smelting_format')
+class mc_smelting(memory_type):
+    typename = 'mc_smelting'
+    postfix = 'smelting'
+
+
+def get_type(typ, name, parent):
+    # Pre-defined type, datautils.c can handle it
+    if isinstance(typ, str):
+        return mcd_typemap[typ](name, parent)
+    # Fucking MCdata and their fucking inline types fuck
+    else:
+        return mcd_typemap[typ[0]](name, typ[1], parent)
+
+def get_depth(field):
+    depth = 0
+    while not isinstance(field.parent, packet):
+        depth += 1
+        field = field.parent
+    return depth
+
+# These are generic structures that Mcdata uses to implement other types. Since
+# mcdata often likes to define new types inline, rather than in the "types"
+# section, we need to support them. This makes the generated code ugly and is
+# a massive pain in my ass
+
+class custom_type(complex_type):
+    def __init__(self, name, data, parent):
+        super().__init__(name, parent)
+        self.data = data
+
+@mc_data_name('buffer')
+class mc_buffer(custom_type, memory_type):
+    def __init__(self, name, data, parent):
+        super().__init__(name, data, parent)
+        self.ln = get_type(data['countType'], 'len', self)
+        self.base = c.variable('base', 'char *')
+        self.children = [self.ln, self.base]
+
+    def struct_line(self):
+        return c.linesequence((c.struct(elems = (
+            self.ln.struct_line(),
+            c.statement(self.base.decl)
+        )), c.statement(self.name)))
+
+    def enc_line(self, ret, dest, src):
+        seq = c.sequence()
+        basevar = c.variable(f'{src}.base', 'char *')
+        lenvar = c.variable(f'{src}.len', self.ln.typename)
+        seq.append(self.ln.enc_line(ret, dest, lenvar))
+        seq.append(c.statement(c.assign(dest, c.fcall(
+            'memcpy', 'void *', (dest, basevar, lenvar)
+        ))))
+        return seq
+
+    def dec_line(self, ret, dest, src):
+        seq = c.sequence()
+        basevar = c.variable(f'{dest}.base', 'char *')
+        lenvar = c.variable(f'{dest}.len', self.ln.typename)
+        seq.append(self.ln.dec_line(ret, lenvar, src))
+        seq.append(c.inlineif(c.wrap(c.assign(
+            basevar, c.fcall('malloc', 'void *', (lenvar,))
+        ), True), c.returnval('NULL')))
+        seq.append(c.statement(c.fcall('memcpy', 'void *', (
+            basevar, src, lenvar
+        ))))
+        seq.append(c.statement(c.addeq(src, lenvar)))
+        return seq
+
+    def walk_line(self, ret, src, max_len, size):
+        seq = c.sequence()
+        lenvar = c.variable(
+            f'{self.name}_len', self.ln.typename
+        )
+        if isinstance(self.ln, numeric_type):
+            seq.append(c.inlineif(
+                c.lth(max_len, self.ln.size), c.returnval(-1))
+            )
+            seq.append(c.statement(c.addeq(size, self.ln.size)))
+            seq.append(c.statement(c.subeq(max_len, self.ln.size)))
+        else:
+            seq.append(self.ln.walk_line(ret, src, max_len))
+            seq.append(c.statement(c.addeq(size, ret)))
+            seq.append(c.statement(c.subeq(max_len, ret)))
+        seq.append(c.statement(lenvar.decl))
+        seq.append(self.ln.dec_line(src, lenvar, src))
+        seq.append(c.inlineif(c.lth(max_len, lenvar), c.returnval(-1)))
+        seq.append(c.statement(c.addeq(size, lenvar)))
+        seq.append(c.statement(c.addeq(src, lenvar)))
+        seq.append(c.statement(c.subeq(max_len, lenvar)))
+        return seq
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_buffer size_line unimplemented')
+
+    def free_line(self, field):
+        return c.linecomment('mc_buffer free_line unimplemented')
+
+@mc_data_name('restBuffer')
+class mc_restbuffer(memory_type):
+    typename = 'mc_buffer'
+    postfix = 'buffer'
+
+    def dec_line(self, ret, dest, src):
+        return c.linecomment('mc_restbuffer dec_line unimplemented')
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_restbuffer size_line unimplemented')
+
+    def walk_line(self, ret, src, max_len):
+        return c.linecomment('mc_restbuffer walk_line unimplemented')
+
+    def free_line(self, field):
+        return c.linecomment('mc_restbuffer free_line unimplemented')
+
+@mc_data_name('array')
+class mc_array(custom_type, memory_type):
+    def __init__(self, name, data, parent):
+        super().__init__(name, data, parent)
+        self.children = []
+        if 'countType' in data:
+            self.self_contained = True
+            self.external_count = None
+            self.count = get_type(data['countType'], 'count', self)
+            self.children.append(self.count)
+            self.base = get_type(data['type'], '*base', self)
+        else:
+            self.self_contained = False
+            self.external_count = search_fields(
+                to_snake_case(data['count']), parent
+            )
+            self.external_count.switched = True
+            self.count = None
+            # ToDo: This is a hack, cfile needs better pointer support
+            self.base = get_type(data['type'], f'*{name}', self)
+        self.children.append(self.base)
+
+    def __eq__(self, value):
+        if not super().__eq__(value):
+            return False
+        return all((
+            self.self_contained == value.self_contained,
+            self.external_count == value.external_count,
+            self.count == value.count,
+            self.base == value.base
+        ))
+
+    def struct_line(self):
+        if self.self_contained:
+            return c.linesequence((c.struct(elems = (
+                self.count.struct_line(),
+                self.base.struct_line()
+            )), c.statement(self.name)))
+        return self.base.struct_line()
+
+    def enc_line(self, ret, dest, src):
+        return c.linecomment('mc_array enc_line unimplemented')
+
+    def dec_line(self, ret, dest, src):
+        seq = c.sequence()
+        if self.self_contained:
+            countvar = c.variable(f'{dest.name}.count', self.count.typename)
+            seq.append(self.count.dec_line(ret, countvar, src))
+            depth = get_depth(self)
+            loopvar = c.variable(f'i_{depth}', 'size_t')
+            basevar = c.variable(f'{dest.name}.base', None)
+            seq.append(c.inlineif(c.wrap(c.assign(basevar, c.fcall(
+                'malloc', 'void *', (f'sizeof(*{basevar}) * {countvar}',)
+            )), True), c.returnval('NULL')))
+            basevar = c.variable(f'{basevar}[{loopvar}]', None)
+            seq.append(c.forloop(
+                c.assign(loopvar.decl, 0),
+                c.lth(loopvar, countvar),
+                c.incop(loopvar),
+                (self.base.dec_line(ret, basevar, src),)
+            ))
+            return seq
+        return c.linecomment('non-selfcontained mc_array unimplemented')
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_array size_line unimplemented')
+
+    def walk_line(self, ret, src, max_len, size):
+        seq = c.sequence()
+        if self.self_contained:
+            count_var = c.variable(
+                f'{self.name}_count', self.count.typename
+            )
+            # Hack for arrays containing arrays
+            if self.name == '*base':
+                depth = 0
+                parent = self.parent
+                while parent.name == '*base':
+                    depth += 1
+                    parent = self.parent
+                count_var.name = f'{self.parent.name}{depth}_count'
+            if isinstance(self.count, numeric_type):
+                seq.append(c.inlineif(
+                    c.lth(max_len, self.count.size), c.returnval(-1))
+                )
+                seq.append(c.statement(c.addeq(size, self.count.size)))
+                seq.append(c.statement(c.subeq(max_len, self.count.size)))
+            else:
+                seq.append(self.count.walk_line(ret, src, max_len))
+                seq.append(c.statement(c.addeq(size, ret)))
+                seq.append(c.statement(c.subeq(max_len, ret)))
+            seq.append(c.statement(count_var.decl))
+            seq.append(self.count.dec_line(src, count_var, src))
+        else:
+            count_var = self.external_count.internal
+        if hasattr(self.base, 'size') and not self.base.size is None:
+            seq.append(c.inlineif(
+                c.lth(max_len, c.mulop(count_var, self.base.size)),
+                c.returnval(-1)
+            ))
+            seq.append(c.statement(c.addeq(
+                size, c.mulop(count_var, self.base.size)
+            )))
+            seq.append(c.statement(c.addeq(
+                src, c.mulop(count_var, self.base.size)
+            )))
+            seq.append(c.statement(c.subeq(
+                max_len, c.mulop(count_var, self.base.size)
+            )))
+        else:
+            depth = get_depth(self)
+            loopvar = c.variable(f'i_{depth}', 'size_t')
+            if isinstance(self.base, custom_type):
+                forelems = [self.base.walk_line(ret, src, max_len, size)]
+            else:
+                forelems = [self.base.walk_line(ret, src, max_len)]
+                forelems.append(c.statement(c.addeq(size, ret)))
+                forelems.append(c.statement(c.addeq(src, ret)))
+                forelems.append(c.statement(c.subeq(max_len, ret)))
+            seq.append(c.forloop(
+                c.assign(loopvar.decl, 0),
+                c.lth(loopvar, count_var),
+                c.incop(loopvar, False),
+                forelems
+            ))
+
+        return seq
+
+    def free_line(self, field):
+        pass
+
 import re
-
-#This is not a real compiler, there is no IR or anything. Just walks the
-#minecraft_data protocol tree and magics up some C
-
-#All varints are varlongs until this gets fixed
-#https://github.com/PrismarineJS/minecraft-data/issues/119
 
 first_cap_re = re.compile('(.)([A-Z][a-z]+)')
 all_cap_re = re.compile('([a-z0-9])([A-Z])')
@@ -18,793 +473,827 @@ def to_snake_case(name):
     s1 = first_cap_re.sub(r'\1_\2', name)
     return all_cap_re.sub(r'\1_\2', s1).lower()
 
-proto_states = "handshaking", "login", "status", "play"
-directions = "toClient", "toServer"
-
-type_name_map = {
-    'bool': 'uint8_t',
-    'i8':   'int8_t',
-    'u8':   'uint8_t',
-    'li8':  'int8_t',
-    'lu8':  'uint8_t',
-    'i16':  'int16_t',
-    'u16':  'uint16_t',
-    'li16': 'int16_t',
-    'lu16': 'uint16_t',
-    'i32':  'int32_t',
-    'u32':  'uint32_t',
-    'li32': 'int32_t',
-    'lu32': 'uint32_t',
-    'i64':  'int64_t',
-    'u64':  'uint64_t',
-    'li64': 'int64_t',
-    'lu64': 'uint64_t',
-    'f32':  'float',
-    'lf32': 'float',
-    'f64':  'double',
-    'lf64': 'double',
-    'uuid': 'mc_uuid',
-    'position': 'mc_position',
-    'varint': 'int64_t', #change when 119 is fixed
-    'varlong': 'int64_t',
-    'string': 'sds',
-    'slot': 'mc_slot',
-    'particle': 'mc_particle',
-    'ingredient': 'mc_ingredient',
-    'nbt': 'nbt_node *',
-    'optionalnbt': 'nbt_node *',
-    'buffer': 'mc_buffer',
-    'restbuffer': 'mc_buffer',
-    'entitymetadata': 'mc_metadata',
-    'tags': 'mc_itemtag_array',
-    'particledata': 'mc_particle',
-}
-
-numeric_type_map = {
-    'bool':  'byte',
-    'i8':    'byte',
-    'u8':    'byte',
-    'li8':   'byte',
-    'lu8':   'byte',
-    'i16':   'be16',
-    'u16':   'be16',
-    'li16':  'le16',
-    'lu16':  'le16',
-    'i32':   'be32',
-    'u32':   'be32',
-    'li32':  'le32',
-    'lu32':  'le32',
-    'i64':   'be64',
-    'u64':   'be64',
-    'li64':  'le64',
-    'lu64':  'le64',
-    'f32':  'bef32',
-    'lf32': 'lef32',
-    'f64':  'bef64',
-    'lf64': 'lef64',
-    'uuid': 'uuid', #uuids are basically numerics
-    'position': 'position', #so are positions
-}
-
-numeric_sizes = {
-    'byte': 1,
-    'be16': 2,
-    'le16': 2,
-    'be32': 4,
-    'le32': 4,
-    'be64': 8,
-    'le64': 8,
-    'bef32': 4,
-    'lef32': 4,
-    'bef64': 8,
-    'lef64': 8,
-    'uuid': 16,
-    'position': 8,
-}
-
-complex_type_map = {
-    'varint': 'varlong', #change when 119 is fixed
-    'varlong': 'varlong',
-    'string': 'string',
-    'slot': 'slot',
-    'particle': 'particle',
-    'ingredient': 'ingredient',
-    'nbt': 'nbt',
-    'optionalnbt': 'optnbt',
-    'entitymetadata': 'metadata',
-    'tags': 'itemtag_array',
-}
-
-malloc_types = {
-    'string': 'string',
-    'slot': 'slot',
-    'particle': 'particle',
-    'ingredient': 'ingredient',
-    'nbt': 'nbt',
-    'optionalnbt': 'optnbt',
-    'entitymetadata': 'metadata',
-    'tags': 'itemtag_array',
-    'restbuffer': 'buffer',
-    'buffer': 'buffer'
-}
-cast_map = {
-    'i8':   'uint8_t',
-    'li8':  'uint8_t',
-    'i16':  'uint16_t',
-    'li16': 'uint16_t',
-    'i32':  'uint32_t',
-    'li32': 'uint32_t',
-    'i64':  'uint64_t',
-    'li64': 'uint64_t',
-}
-
-def decode_generic(type, location, assign = True):
-    at = 'source = ' if assign else ''
-    return c.line(at + str(c.fcall('dec_'+type).add_param(location).add_param('source')))
-
-def container_size(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def container_walk(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def container_enc(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def container_dec(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def container_struct(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def handle_container(field, op):
-    return {
-        'size': container_size,
-        'walk': container_walk,
-        'enc': container_enc,
-        'dec': container_dec,
-        'struct': container_struct,
-    }[op](field)
-
-def buffer_size(field):
-    ret = c.sequence()
-    len_field = 'packet.' + field.name + '.len'
-    ct = field.custom_payload['countType']
-    if ct == 'varint' or ct == 'varlong':
-        ct = 'varlong' #Remove when 119 is fixed
-        size = c.fcall('size_' + ct).add_param(len_field)
-    else:
-        size = numeric_sizes[numeric_type_map[field.type]]
-    ret.appstat('size += ' + str(size) + ' + ' + len_field)
-    return ret;
-
-def buffer_walk(field):
-    len_name = field.name + '_len'
-    ct = field.custom_payload['countType']
-    if ct == 'varint':
-        ct = 'varlong' #Remove when 119 is fixed
-    ret = gen_walker_inner((_field(ct, field.packet, len_name, None, False, True),))
-    ret.appstat('if (max_len < (size_t) '+ len_name + ') return -1')
-    ret.appstat('size += ' + len_name)
-    if not field.final:
-        ret.appstat('source += ' + len_name)
-        ret.appstat('max_len -= sizeof(' + len_name +') + ' + len_name)
-    return ret;
-
-def buffer_enc(field):
-    ret = c.sequence()
-    ct = field.custom_payload['countType']
-    len_name = 'source.' + field.name + '.len'
-    if ct == 'varint' or ct == 'varlong':
-        ct = 'varlong' #Remove when 119 is fixed
-        ret.appstat('dest = ' +
-            str(c.fcall('enc_' + ct).add_param('dest').add_param(len_name))
-        )
-    else:
-        ret.appstat('dest = ' + str(c.fcall(
-            'enc_' + numeric_type_map[ct]
-        ).add_param('dest').add_param(len_name)))
-    ret.appstat(str(c.fcall('memcpy').add_param('dest').add_param(
-        'source.' + field.name + '.data').add_param(len_name)
-    ))
-    ret.appstat('dest += ' + len_name)
-    return ret;
-
-def buffer_dec(field):
-    ret = c.sequence()
-    ct = field.custom_payload['countType']
-    len_name = 'dest->' + field.name + '.len'
-    buf_name = 'dest->' + field.name + '.data'
-    if ct == 'varint' or ct == 'varlong':
-        ct = 'varlong' #Remove when 119 is fixed
-        ret.appstat(decode_generic(ct, '(int64_t *) &' + len_name))
-    else:
-        ret.appstat(decode_generic(numeric_type_map[ct], '&' + len_name))
-    ret.appstat('if(!(' + buf_name + ' = ' +
-        str(c.fcall('malloc').add_param(len_name)) + ')) return NULL'
-    )
-    ret.appstat(str(c.fcall('memcpy').add_param(buf_name).add_param(
-        'source').add_param(len_name)
-    ))
-    ret.appstat('dest += ' + len_name)
-    return ret;
-
-#In practice handled by type_name_map and gen_packet_structure, but implemented
-#just in case I change that.
-def buffer_struct(field):
-    return c.statement(c.variable(field.name, 'mc_buffer'))
-
-def handle_buffer(field, op):
-    return {
-        'size': buffer_size,
-        'walk': buffer_walk,
-        'enc': buffer_enc,
-        'dec': buffer_dec,
-        'struct': buffer_struct,
-    }[op](field)
-
-def get_bitfield_size(field):
+# Read consecutive numeric types from a list of fields and return their
+# collective size and the position they're interrupted by a non-numeric type or
+# a numeric that acts as a switch, which will need to be decoded
+def group_numerics(fields, position):
     total = 0
-    for segment in field.custom_payload:
-        total += segment['size']
-    return total//8
-
-#bitfield size/walk is handled by the size preprocessor, in practice these
-#are never called
-def bitfield_size(field):
-    return c.statement('size += ' + str(get_bitfield_size(field)))
-
-def bitfield_walk(field):
-    size = str(get_bitfield_size(field))
-    return c.sequence().appstat('size += ' + size).appstat('source += ' + size
-    ).appstat('max_len -= ' + size)
-
-def bitfield_enc(field):
-    ret = c.sequence()
-    size = get_bitfield_size(field)
-    type = ('uint8_t','uint16_t','uint32_t','uint64_t')[size - 1]
-    ret.appstat(c.variable(field.name, type))
-    f = ('enc_byte','enc_be16','enc_be32','enc_be64')[size - 1]
-    for segment in field.custom_payload:
-        size -= segment['size']
-        if segment['name'] != '_unused':
-            val = 'packet.' + segment['name']
-            ret.appstat(field.name + ' |= ' + val + ' << ' + size)
-    ret.appstat('dest = ' + str(c.fcall(f).add_param('dest', field.name)))
-    return ret
-
-#TODO: Nothing uses bitfields, but we should still implement this
-def bitfield_dec(field):
-    return c.linecomment('Decoder for bitfield: ' + str(field.name) + ' not yet implemented')
-
-def bitfield_struct(field):
-    ret = c.sequence()
-    size = get_bitfield_size(field)
-    type = ('uint8_t','uint16_t','uint32_t','uint64_t')[size - 1]
-    for segment in field.custom_payload:
-        if segment['name'] != '_unused':
-            ret.appstat(c.variable(segment['name'], type))
-    return ret
-
-def handle_bitfield(field, op):
-    return {
-        'size': bitfield_size,
-        'walk': bitfield_walk,
-        'enc': bitfield_enc,
-        'dec': bitfield_dec,
-        'struct': bitfield_struct,
-    }[op](field)
-
-def option_size(field):
-    opt_name = field.name + '_opt'
-    ret = gen_sizer_inner((_field('bool', field.packet, opt_name),))
-    body = c.block(None, 4, 'if(packet.' + opt_name + ')')
-    return ret.append(body.append(gen_sizer_inner((_field(field.custom_payload, field.packet, field.name),))))
-
-def option_walk(field):
-    opt_name = field.name + '_opt'
-    ret = gen_walker_inner((_field('bool', field.packet, opt_name, None, False, True),))
-    body = c.block(None, 4, 'if(' + opt_name + ')')
-    return ret.append(body.append(gen_walker_inner((_field(field.custom_payload, field.packet, field.name, None, field.final),))))
-
-def option_enc(field):
-    opt_name = field.name + '_opt'
-    ret = gen_encoder_inner((_field('bool', field.packet, opt_name),))
-    body = c.block(None, 4, 'if(source.' + opt_name + ')')
-    return ret.append(body.append(gen_encoder_inner((_field(field.custom_payload, field.packet, field.name, None, field.final),))))
-
-def option_dec(field):
-    opt_name = field.name + '_opt'
-    ret = gen_decoder_inner((_field('bool', field.packet, opt_name),))
-    body = c.block(None, 4, 'if(dest->' + opt_name + ')')
-    return ret.append(body.append(gen_decoder_inner((_field(field.custom_payload, field.packet, field.name, None, field.final),))))
-
-def option_struct(field):
-    fields = (
-        _field('bool', field.packet, field.name + '_opt'),
-        _field(field.custom_payload, field.packet, field.name),
-    )
-    return gen_struct_inner(fields)
-
-def handle_option(field, op):
-    return {
-        'size': option_size,
-        'walk': option_walk,
-        'enc': option_enc,
-        'dec': option_dec,
-        'struct': option_struct,
-    }[op](field)
-
-def mapper_size(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def mapper_walk(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def mapper_enc(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def mapper_dec(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def mapper_struct(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def handle_mapper(field, op):
-    return {
-        'size': mapper_size,
-        'walk': mapper_walk,
-        'enc': mapper_enc,
-        'dec': mapper_dec,
-        'struct': mapper_struct,
-    }[op](field)
-
-def switch_size(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def switch_walk(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def switch_enc(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def switch_dec(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def switch_struct(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def handle_switch(field, op):
-    return {
-        'size': switch_size,
-        'walk': switch_walk,
-        'enc': switch_enc,
-        'dec': switch_dec,
-        'struct': switch_struct,
-    }[op](field)
-
-def array_size(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def array_walk(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def array_enc(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def array_dec(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def array_struct(field):
-    return c.linecomment('Type for field: ' + str(field.name) + ' not yet implemented')
-
-def handle_array(field, op):
-    return {
-        'size': array_size,
-        'walk': array_walk,
-        'enc': array_enc,
-        'dec': array_dec,
-        'struct': array_struct,
-    }[op](field)
-
-def particledata_size(field):
-    return c.statement('size += ' + str(
-        c.fcall('size_particledata').add_param('packet.' + field.name)
-    ))
-
-def particledata_walk(field):
-    ret = c.sequence()
-    ret.appstat('if((ret = ' + str(
-        c.fcall('walk_particledata').add_param('source').add_param('max_len'
-        ).add_param(field.custom_payload['compareTo'])
-    ) + ') < 0) return -1')
-    ret.appstat('size += ret')
-    return ret
-
-def particledata_enc(field):
-    return c.statement('dest = ' + str(c.fcall(
-        'enc_particledata').add_param('dest').add_param('source.' + field.name)
-    ))
-
-def particledata_dec(field):
-    return c.statement('source = ' + str(
-        c.fcall('dec_particledata').add_param('&dest->' + field.name
-        ).add_param('source').add_param('dest->' + field.custom_payload['compareTo'])
-    ))
-
-#In practice handled by type_name_map and gen_packet_structure, but implemented
-#just in case I change that.
-def particledata_struct(field):
-    return c.statement(c.variable(field.name, 'mc_particle'))
-
-def handle_particledata(field, op):
-    return {
-        'size': particledata_size,
-        'walk': particledata_walk,
-        'enc': particledata_enc,
-        'dec': particledata_dec,
-        'struct': particledata_struct,
-    }[op](field)
-
-custom_type_map = {
-    'buffer': handle_buffer,
-    'mapper': handle_mapper,
-    'array': handle_array,
-    'switch': handle_switch,
-    'bitfield': handle_bitfield,
-    'option': handle_option,
-    'particledata': handle_particledata,
-}
-
-def gen_struct_inner(fields):
-    body = c.sequence()
-    for f in fields:
-        if f.type in type_name_map:
-            body.appstat(c.variable(
-                f.name,
-                type_name_map[f.type]
-            ))
-        elif f.type in custom_type_map:
-            body.append(custom_type_map[f.type](f, 'struct'))
-        elif f.type == 'void':
-            continue
+    for idx, field in enumerate(fields[position:]):
+        if isinstance(field, mc_bitfield):
+            if any([child.switched for child in field.children]):
+                return position + idx, total
+            total += field.size
+        elif isinstance(field, numeric_type) and not field.switched:
+            total += field.size
         else:
-            print('Don\'t know how to generate struct for:', f.type)
-    return body
+            return position + idx, total
+    return position + len(fields), total
 
-def gen_packet_structure(hdr, packet):
-    body = c.struct(None, packet.full_name + '_t', innerIndent=4)
-    body.code = gen_struct_inner(packet.fields)
-    hdr.code.appstat(body)
-
-def size_preprocessor(fields):
-    if not fields:
-        return []
-    new_fields = []
-    grouped = _field('grouped', fields[0].packet, None, custom_payload=0)
-    for f in fields:
-        if f.type == 'bitfield':
-            grouped.custom_payload += get_bitfield_size(f)
-        elif f.complex:
-            if grouped.custom_payload:
-                new_fields.append(grouped)
-                grouped = _field('grouped', grouped.packet, None, custom_payload=0)
-            new_fields.append(f)
-        else:
-            grouped.custom_payload += numeric_sizes[numeric_type_map[f.type]]
-    if grouped.custom_payload:
-        grouped.final = True
-        new_fields.append(grouped)
-    return new_fields
-
-def gen_walker_inner(fields):
-    body = c.sequence()
-    for f in size_preprocessor(fields):
-        if f.switched_on:
-            body.appstat(type_name_map[f.type] + ' ' + f.name)
-            if f.type in numeric_type_map:
-                t = numeric_type_map[f.type]
-                size = str(numeric_sizes[t])
-                body.appstat('if(max_len < ' + size + ') return -1')
-                if f.type in cast_map:
-                    body.appstat(decode_generic(
-                        t, '(' + cast_map[f.type] + '*) &' + f.name
-                    ))
-                else:
-                    body.appstat(decode_generic(
-                        numeric_type_map[f.type], '&' + f.name
-                    ))
-                body.appstat('size += ' + size)
-                body.appstat('max_len -= ' + size)
-            else:
-                body.appstat('if((ret = ' + str(
-                    c.fcall('walk_' + complex_type_map[f.type]
-                    ).add_param('source').add_param('max_len')
-                ) + ') < 0) return -1')
-                body.appstat(decode_generic(
-                    complex_type_map[f.type], '&' + f.name
-                ))
-                body.appstat('max_len -= ret')
-                body.appstat('size += ret')
-        elif f.type == 'grouped':
-            size = str(f.custom_payload)
-            body.appstat('if(max_len < ' + size + ') return -1')
-            body.appstat('size += ' + size)
-            if not f.final:
-                body.appstat('source += ' + size)
-                body.appstat('max_len -= ' + size)
-        elif f.type in complex_type_map:
-            body.appstat('if((ret = ' + str(
-                c.fcall('walk_' + complex_type_map[f.type]
-                ).add_param('source').add_param('max_len')
-            ) + ') < 0) return -1')
-            if not f.final:
-                body.appstat('max_len -= ret')
-                body.appstat('source += ret')
-            body.appstat('size += ret')
-        elif f.type in custom_type_map:
-            body.append(custom_type_map[f.type](f, 'walk'))
-        else:
-            print('Dont know how to handle type:', f.type, "in packet:", f.packet.name)
-            continue
-    return body
-
-def gen_packet_walker(file, hdr, packet):
-    func = c.function('walk_' + packet.full_name).add_arg(
-        c.variable('source', 'char', pointer = 1)).add_arg(
-        c.variable('max_len', 'size_t')
-    )
-    hdr.code.appstat(func)
-    body = c.block(innerIndent = 4, head = func)
-    body.appstat(str(c.variable('size')) + ' = 0')
-    if packet.has_complex:
-        body.appstat(str(c.variable('ret')))
-    body.append(gen_walker_inner(packet.fields))
-    body.appstat('return size')
-    file.code.append(body)
-    file.code.append(c.blank())
-
-def gen_sizer_inner(fields):
-    body = c.sequence()
-    for f in size_preprocessor(fields):
-        if f.type == 'grouped':
-            body.appstat('size += ' + str(f.custom_payload))
-        elif f.type in complex_type_map:
-            body.appstat('size += ' +
-                str(c.fcall('size_' + complex_type_map[f.type]).add_param(
-                    'packet.' + f.name
-                ))
-            )
-        elif f.type in custom_type_map:
-            body.append(custom_type_map[f.type](f, 'size'))
-        else:
-            continue
-    return body
-
-def gen_packet_sizer(file, hdr, packet):
-    func = c.function('size_' + packet.full_name, 'size_t').add_arg(
-        c.variable('packet', packet.full_name + '_t')
-    )
-    hdr.code.appstat(func)
-    body = c.block(innerIndent = 4, head = func)
-    complex_fields = []
-    numeric_size = 0
-    for f in size_preprocessor(packet.fields):
-        if f.type == 'grouped':
-            numeric_size += f.custom_payload
-        else:
-            complex_fields.append(f)
-    if complex_fields:
-        body.appstat(str(c.variable('size', 'size_t')) + ' = ' + str(numeric_size))
-        body.append(gen_sizer_inner(complex_fields))
-        body.appstat('return size')
+def check_instance(fields, typ):
+    for field in fields:
+        if isinstance(field, typ):
+            return True
+        if hasattr(field, 'children') and check_instance(field.children, typ):
+            return True
     else:
-        body.appstat('return ' + str(numeric_size))
-    file.code.append(body)
-    file.code.append(c.blank())
+        return False
 
-def gen_encoder_inner(fields):
-    body = c.sequence()
-    for f in fields:
-        ref_name = 'source.' + str(f.name)
-        if f.type in numeric_type_map:
-            body.appstat('dest = ' + str(c.fcall(
-                 'enc_'+ numeric_type_map[f.type]).add_param(
-                    'dest').add_param(ref_name)
-            ))
-        elif f.type in complex_type_map:
-            body.appstat('dest = ' + str(c.fcall(
-                 'enc_'+ complex_type_map[f.type]).add_param(
-                    'dest').add_param(ref_name)
-            ))
-        elif f.type in custom_type_map:
-            body.append(custom_type_map[f.type](f, 'enc'))
-        else:
-            continue
-    return body
-
-def gen_packet_encoder(file, hdr, packet):
-    func = c.function('enc_' + packet.full_name, 'char', pointer = 1).add_arg(
-        c.variable('dest', 'char', pointer = 1)).add_arg(
-        c.variable('source', packet.full_name + '_t')
-    )
-    hdr.code.appstat(func)
-    body = c.block(innerIndent=4, head = func)
-    body.append(gen_encoder_inner(packet.fields))
-    body.appstat('return dest')
-    file.code.append(body)
-    file.code.append(c.blank())
-
-def gen_decoder_inner(fields):
-    body = c.sequence()
-    for f in fields:
-        ref_name = 'dest->' + str(f.name)
-        if f.type in numeric_type_map:
-            if f.type in cast_map:
-                body.appstat(decode_generic(
-                    numeric_type_map[f.type], '(' + cast_map[f.type] + '*) &' + ref_name
-                ))
-            else:
-                body.appstat(decode_generic(
-                    numeric_type_map[f.type], '&' + ref_name
-                ))
-        elif f.type == 'entitymetadata':
-            body.appstat('count = ' + str(
-                c.fcall('count_metatags').add_param('source')
-            ))
-            body.appstat('source = ' + str(
-                c.fcall('dec_metadata').add_param('&' + ref_name).add_param('source').add_param('count')
-            ))
-        elif f.type == 'varint' or f.type == 'varlong':
-            body.appstat(decode_generic(complex_type_map[f.type], '&' + ref_name))
-        elif f.type in complex_type_map:
-            body.appstat('if(!(' + str(decode_generic(
-                complex_type_map[f.type], '&' + ref_name
-            )) + ')) return NULL')
-        elif f.type in custom_type_map:
-            body.append(custom_type_map[f.type](f, 'dec'))
-        else:
-            continue
-    return body
-
-def gen_packet_decoder(file, hdr, packet):
-    func = c.function('dec_' + packet.full_name, 'char', pointer = 1).add_arg(
-        c.variable('dest', packet.full_name + '_t', pointer = 1)).add_arg(
-        c.variable('source', 'char', pointer = 1)
-    )
-    hdr.code.appstat(func)
-    body = c.block(innerIndent = 4, head = func)
-    if packet.has_metadata:
-        body.appstat(c.variable('count', 'size_t'))
-    body.append(gen_decoder_inner(packet.fields))
-    body.appstat('return source')
-    file.code.append(body)
-    file.code.append(c.blank())
-
-def gen_freer_inner(fields):
-    ret = c.sequence()
-    for f in fields:
-        if f.type in malloc_types:
-            ret.appstat(c.fcall('free_' + malloc_types[f.type]).add_param(
-                'packet.' + f.name
-            ))
-    return ret
-
-def gen_packet_freer(file, hdr, packet):
-    func = c.function('free_' + packet.full_name, 'void').add_arg(
-        c.variable('packet', packet.full_name + '_t')
-    )
-    hdr.code.appstat(func)
-    body = c.block(innerIndent = 4, head = func)
-    body.append(gen_freer_inner(packet.fields))
-    file.code.append(body)
-    file.code.append(c.blank())
-
-class _field:
-    def __init__(self, type, packet, name=None, custom_payload=None, final=False, switched_on = False):
-        self.type = type
-        self.name = name
-        self.custom_payload = custom_payload
-        self.final = final
-        self.packet = packet
-        self.switched_on = switched_on
-        self.complex = (type not in numeric_type_map and type != 'grouped') or switched_on
-
-    @property
-    def anon(self):
-        return self.name is None
-
-    @property
-    def has_custom(self):
-        return not self.custom_payload is None
-
-class _packet:
-    def __init__(self, proto_state, direction, name, packet_data):
-        self.name = name
-        self.full_name = '_'.join((proto_state, direction.lower(), name))
+@mc_data_name('container')
+class mc_container(custom_type):
+    def __init__(self, name, data, parent):
+        super().__init__(name, data, parent)
         self.fields = []
-        self.has_metadata = False
-        self.has_complex = False
-        self.has_malloc = False
-        #We always ignore the initial container
-        for field in packet_data[1]:
-            if isinstance(field['type'], list):
-                f = _field(
-                    field['type'][0].lower(),
-                    self,
-                    to_snake_case(field.get('name')),
-                    field['type'][1],
+        self.children = self.fields
+        for field in data:
+            try:
+                fname = to_snake_case(field['name'])
+            except KeyError as err:
+                fname = 'anonymous'
+            self.fields.append(get_type(field['type'], fname, self))
+        self.complex = check_instance(self.fields, complex_type)
+        if self.complex:
+            self.size = None
+        else:
+            _, self.size = group_numerics(self.fields, 0)
+
+    def __eq__(self, value):
+        if not super().__eq__(value) or len(self.fields) != len(value.fields):
+            return False
+        return all([i == j for i, j in zip(self.fields, value.fields)])
+
+    def struct_line(self):
+        struct_fields = [f.struct_line() for f in self.fields]
+        return c.linesequence((
+            c.struct(elems = struct_fields),
+            c.statement(self.name)
+        ))
+
+    def enc_line(self, ret, dest, src):
+        return c.linecomment('mc_container enc_line unimplemented')
+
+    def dec_line(self, ret, dest, src):
+        seq = c.sequence()
+        for field in self.fields:
+            v = c.variable(f'{dest.name}.{field.name}', field.typename)
+            seq.append(field.dec_line(src, v, src))
+        return seq
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_container size_line unimplemented')
+
+    def walk_line(self, ret, src, max_len, size):
+        seq = c.sequence()
+        to_free = []
+        position = 0
+        endpos = len(self.fields)
+        while(position < endpos):
+            position, total = group_numerics(self.fields, position)
+            if total:
+                seq.append(c.inlineif(
+                    c.lth(max_len, total), c.returnval(-1)
+                ))
+                seq.append(c.statement(c.addeq(size, total)))
+                seq.append(c.statement(c.addeq(src, total)))
+                seq.append(c.statement(c.subeq(max_len, total)))
+            if position < endpos:
+                field = self.fields[position]
+                position += 1
+                if field.switched:
+                    #ToDo: Consider giving types a walk_switched method instead
+                    # of this madness
+                    seq.append(c.statement(field.internal.decl))
+                    if isinstance(field, numeric_type):
+                        seq.append(c.inlineif(
+                            c.lth(max_len, field.size), c.returnval(-1)
+                        ))
+                        seq.append(c.statement(c.addeq(size, field.size)))
+                        seq.append(c.statement(c.subeq(max_len, field.size)))
+                    else:
+                        seq.append(field.walk_line(ret, src, max_len))
+                        seq.append(c.statement(c.addeq(size, ret)))
+                        seq.append(c.statement(c.subeq(max_len, ret)))
+                    if isinstance(field, memory_type):
+                        seq.append(field.walkdec_line(src, field, src))
+                        to_free.append(field)
+                    else:
+                        seq.append(field.dec_line(src, field, src))
+                elif isinstance(field, custom_type):
+                    seq.append(field.walk_line(ret, src, max_len, size))
+                else:
+                    seq.append(field.walk_line(ret, src, max_len))
+                    seq.append(c.statement(c.addeq(size, ret)))
+                    seq.append(c.statement(c.addeq(src, ret)))
+                    seq.append(c.statement(c.subeq(max_len, ret)))
+        for field in to_free:
+            seq.append(field.free_line(field))
+        return seq
+
+    def free_line(self, field):
+        pass
+
+@mc_data_name('option')
+class mc_option(custom_type):
+    def __init__(self, name, data, parent):
+        super().__init__(name, data, parent)
+        self.children = []
+        self.opt = num_u8('opt', self)
+        self.children.append(self.opt)
+        self.val = get_type(data, 'val', self)
+        self.children.append(self.val)
+
+    def struct_line(self):
+        return c.linesequence((c.struct(elems = (
+            self.opt.struct_line(),
+            self.val.struct_line()
+        )), c.statement(self.name)))
+
+    def enc_line(self, ret, dest, src):
+        return c.linecomment('mc_option enc_line unimplemented')
+
+    def dec_line(self, ret, dest, src):
+        seq = c.sequence()
+        optvar = c.variable(f'{dest.name}.opt', self.opt.typename)
+        seq.append(self.opt.dec_line(src, optvar, src))
+        valvar = c.variable(f'{dest.name}.val', None)
+        seq.append(c.ifcond(optvar, (self.val.dec_line(src, valvar, src),)))
+        return seq
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_option size_line unimplemented')
+
+    def walk_line(self, ret, src, max_len, size):
+        seq = c.sequence()
+        seq.append(c.inlineif(
+            c.lth(max_len, self.opt.size), c.returnval(-1)
+        ))
+        optvar = c.variable(f'{self.name}_opt', self.opt.typename)
+        seq.append(c.statement(optvar.decl))
+        seq.append(self.opt.dec_line(src, optvar, src))
+        seq.append(c.statement(c.addeq(size, self.opt.size)))
+        seq.append(c.statement(c.subeq(max_len, self.opt.size)))
+        ifelems = []
+        if isinstance(self.val, custom_type):
+            ifelems.append(self.val.walk_line(ret, src, max_len, size))
+        elif isinstance(self.val, numeric_type):
+            ifelems.append(c.inlineif(
+                c.lth(max_len, self.val.size), c.returnval(-1)
+            ))
+            ifelems.append(c.statement(c.addeq(size, self.val.size)))
+            ifelems.append(c.statement(c.addeq(src, self.val.size)))
+            ifelems.append(c.statement(c.subeq(max_len, self.val.size)))
+        else:
+            ifelems = [self.val.walk_line(ret, src, max_len)]
+            ifelems.append(c.statement(c.addeq(size, ret)))
+            ifelems.append(c.statement(c.addeq(src, ret)))
+            ifelems.append(c.statement(c.subeq(max_len, ret)))
+        seq.append(c.ifcond(optvar, ifelems))
+        return seq
+
+    def free_line(self, field):
+        pass
+
+def search_down(name, field):
+    for child in field.children:
+        if child.name == name:
+            return child
+        if hasattr(child, 'children'):
+            ret = search_down(name, child)
+            if not ret is None:
+                return ret
+    return None
+
+def search_fields(name, parent):
+    while True:
+        for field in parent.children:
+            if field.name == name:
+                return field
+            if hasattr(field, 'children'):
+                ret = search_down(name, field)
+                if not ret is None:
+                    return ret
+        if hasattr(parent, 'parent'):
+            parent = parent.parent
+        else:
+            return None
+
+def generic_walk_func(app, field, ret, src, max_len, size):
+    if isinstance(field, numeric_type):
+        app.append(c.statement(c.addeq(size, field.size)))
+        app.append(c.statement(c.addeq(src, field.size)))
+        app.append(c.statement(c.subeq(max_len, field.size)))
+    else:
+        if isinstance(field, custom_type):
+            app.append(field.walk_line(ret, src, max_len, size))
+        else:
+            app.append(field.walk_line(ret, src, max_len))
+            app.append(c.statement(c.addeq(size, ret)))
+            app.append(c.statement(c.addeq(src, ret)))
+            app.append(c.statement(c.subeq(max_len, ret)))
+
+# compare is a protodef compareTo string
+# dest is a C struct/variable string to the switch variable
+# By their powers combined we find our way to the switched variable
+def get_switched_path(compare, dest, field):
+    rf = dest.rfind('.')
+    parent = field.parent
+    if isinstance(parent, packet):
+        dest = dest[:dest.find('->') + 2]
+    else:
+        dest = dest[:dest.rfind('.')]
+    for token in compare.split('/'):
+        if token == '..':
+            parent = parent.parent
+            # Only containers count for '..' lesser types like switches and
+            # arrays must be stripped away like the inconsequential trash they
+            # are.
+            while (
+                not isinstance(parent, mc_container) and
+                not isinstance(parent, packet)
+            ):
+                dest = dest[:dest.rfind('.')]
+                parent = parent.parent
+            if isinstance(parent, packet):
+                dest = dest[:dest.find('->') + 2]
+            else:
+                dest = dest[:dest.rfind('.')]
+        else:
+            if isinstance(parent, packet):
+                dest = f'{dest}{to_snake_case(token)}'
+            else:
+                dest = f'{dest}.{to_snake_case(token)}'
+    return dest
+
+# Switches can do an almost impossible to implement thing, they can move UP the
+# structure hierarchy to look for values. This is... challenging to say the
+# least. It would be fine if compareTo was an absolute path, but it's a
+# relative path which means we have to have huge amounts of knowledge about the
+# structure of the packet in order to derive the appropriate functions
+#
+# Moreover, mcdata uses switches to implement non-trivial optionals (optionals
+# that aren't prefixed by a bool byte). A naive implementation results in some
+# pretty silly data structures. We try to detect when the switch is actually an
+# optional by checking all sorts of crap. Ideally we would be able to merge
+# identical sequential switches but that's really hard to do with mcd2c's
+# current structure
+#
+# I dislike protodef switches and I dislike how mcdata uses them
+@mc_data_name('switch')
+class mc_switch(custom_type):
+    def __init__(self, name, data, parent):
+        super().__init__(name, data, parent)
+        self.compare = data['compareTo']
+        self.fields = []
+        self.children = self.fields
+        self.optional = True
+        self.map = {}
+        self.has_default = False
+        self.default_typ = None
+        self.string_switch = False
+        self.isbool = False
+        self.optional_case = None
+        for enum, typ in data['fields'].items():
+            name = 'enum_' + enum.replace(':', '_')
+            field = get_type(typ, name, self)
+            # Stupid hack around protodef booleans
+            if enum == 'true':
+                enum = '1'
+                self.isbool = True
+            elif enum == 'false':
+                enum = '0'
+                self.isbool = True
+            # Relying on ordered dict, this is Python 3.7+ code lol
+            self.map[int(enum) if enum.isnumeric() else enum] = field
+            if not enum.isnumeric():
+                self.string_switch = True
+            if isinstance(field, void_type):
+                continue
+            self.fields.append(field)
+            if self.optional and (field != self.fields[0]):
+                self.optional = False
+        if 'default' in data and data['default'] != 'void':
+            self.has_default = True
+            self.default_typ = get_type(data['default'], 'enum_def', self)
+            self.fields.append(self.default_typ)
+            if self.default_typ != self.fields[0]:
+                self.optional = False
+
+        if self.optional:
+            self.optional_case = next(iter(self.map))
+            self.fields = self.fields[:1]
+            self.fields[0].name = self.name
+
+        self.cp_short = to_snake_case(
+            self.compare[self.compare.rfind('/') + 1:]
+        )
+        field = search_fields(self.cp_short, parent)
+        if isinstance(field.parent, mc_bitfield) and not self.isbool:
+            self.isbool = field.parent.field_sizes[field.name] == 1
+        field.switched = True
+
+    def struct_line(self):
+        if self.optional:
+            return self.fields[0].struct_line()
+        return c.linesequence((
+            c.union(elems = [f.struct_line() for f in self.fields]),
+            c.statement(self.name)
+        ))
+
+    def enc_line(self, ret, dest, src):
+        return c.linecomment('mc_switch enc_line unimplemented')
+
+    def dec_line(self, ret, dest, src):
+        swvar = c.variable(get_switched_path(self.compare, dest.name, self))
+        if self.isbool and self.optional:
+            v = c.variable(dest.name)
+            if self.optional_case:
+                return c.ifcond(swvar, (self.fields[0].dec_line(ret, v, src),))
+            else:
+                return c.ifcond(c.wrap(swvar, True), (
+                    self.fields[0].dec_line(ret, v, src),
+                ))
+
+        if not self.string_switch:
+            sw = c.switch(swvar)
+            completed_fields = []
+            for caseval, field in self.map.items():
+                for idx, temp in enumerate(completed_fields):
+                    if field == temp:
+                        sw.insert(idx, c.case(caseval, fall=True))
+                        completed_fields.insert(idx, field)
+                        break
+                else:
+                    cf = c.case(caseval)
+                    if isinstance(field, void_type):
+                        cf.append(c.linecomment('void condition'))
+                    else:
+                        if self.optional:
+                            v = c.variable(dest.name)
+                        else:
+                            v = c.variable(f'{dest.name}.{field.name}')
+                        cf.append(field.dec_line(ret, v, src))
+                    completed_fields.append(field)
+                    sw.append(cf)
+            if self.has_default:
+                for idx, temp in enumerate(completed_fields):
+                    if self.default_typ == temp:
+                        sw.insert(idx, c.defaultcase())
+                        break
+                else:
+                    df = c.defaultcase()
+                    if self.optional:
+                        v = c.variable(dest.name)
+                    else:
+                        v = c.variable(f'{dest.name}.{field.name}')
+                    df.append(field.dec_line(ret, v, src))
+                    sw.append(df)
+            return sw
+        first = True
+        sw = c.linesequence()
+        for caseval, field in self.map.items():
+            if not self.has_default and isinstance(field, void_type):
+                continue
+            if first:
+                cf = c.nospace_ifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swvar)
+                ), True))
+                first = False
+            else:
+                cf = c.elifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swvar)
+                ), True))
+            if isinstance(field, void_type):
+                cf.append(c.linecomment('void condition'))
+            else:
+                if self.optional:
+                    v = c.variable(dest.name)
+                else:
+                    v = c.variable(f'{dest.name}.{field.name}')
+                cf.append(field.dec_line(ret, v, src))
+            sw.append(cf)
+        if self.has_default:
+            df = c.elsecond()
+            if self.optional:
+                v = c.variable(dest.name)
+            else:
+                v = c.variable(f'{dest.name}.{field.name}')
+            df.append(field.dec_line(ret, v, src))
+            sw.append(df)
+        return sw
+
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_switch size_line unimplemented')
+
+    def walk_line(self, ret, src, max_len, size):
+        if not self.string_switch and self.isbool and self.optional:
+            elems = []
+            generic_walk_func(elems, self.fields[0], ret, src, max_len, size)
+            if self.optional_case:
+                return c.ifcond(self.cp_short, elems)
+            else:
+                return c.wrap(c.ifcond(self.cp_short, elems), True)
+
+        if not self.string_switch:
+            sw = c.switch(self.cp_short)
+            completed_fields = []
+            for caseval, field in self.map.items():
+                for idx, temp in enumerate(completed_fields):
+                    if field == temp:
+                        sw.insert(idx, c.case(caseval, fall=True))
+                        completed_fields.insert(idx, field)
+                        break
+                else:
+                    cf = c.case(caseval)
+                    if isinstance(field, void_type):
+                        cf.append(c.linecomment('void condition'))
+                    else:
+                        generic_walk_func(cf, field, ret, src, max_len, size)
+                    completed_fields.append(field)
+                    sw.append(cf)
+            if self.has_default:
+                for idx, temp in enumerate(completed_fields):
+                    if self.default_typ == temp:
+                        sw.insert(idx, c.defaultcase())
+                        break
+                else:
+                    df = c.defaultcase()
+                    generic_walk_func(
+                        df, self.default_typ, ret, src, max_len, size
+                    )
+                    sw.append(df)
+            return sw
+        first = True
+        sw = c.linesequence()
+        for caseval, field in self.map.items():
+            if not self.has_default and isinstance(field, void_type):
+                continue
+            if first:
+                cf = c.nospace_ifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', self.cp_short)
+                ), True))
+                first = False
+            else:
+                cf = c.elifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', self.cp_short)
+                ), True))
+            if isinstance(field, void_type):
+                cf.append(c.linecomment('void condition'))
+            else:
+                generic_walk_func(cf, field, ret, src, max_len, size)
+            sw.append(cf)
+        if self.has_default:
+            df = c.elsecond()
+            generic_walk_func(
+                df, self.default_typ, ret, src, max_len, size
+            )
+            sw.append(df)
+        return sw
+
+    def free_line(self, field):
+        pass
+
+
+@mc_data_name('bitfield')
+class mc_bitfield(custom_type, numeric_type):
+    def __init__(self, name, data, parent):
+        lookup_unsigned = {
+            8: num_u8,
+            16: num_u16,
+            32: num_u32,
+            64: num_u64
+        }
+        lookup_signed = {
+            8: num_i8,
+            16: num_i16,
+            32: num_i32,
+            64: num_i64
+        }
+        super().__init__(name, data, parent)
+        total = 0
+        self.fields = []
+        self.mask_shift = []
+        self.field_sizes = {}
+        for field in data:
+            shift = total
+            total += field['size']
+            if field['name'] in ('_unused', 'unused'):
+                continue
+            self.field_sizes[field['name']] = field['size']
+            self.mask_shift.append(((1<<field['size'])-1, shift))
+            numbits = (field['size'] + 7) & -8
+            if field['signed']:
+                self.fields.append(
+                    lookup_signed[numbits](field['name'], self)
                 )
             else:
-                f = _field(
-                    field['type'].lower(),
-                    self,
-                    to_snake_case(field.get('name')),
+                self.fields.append(
+                    lookup_unsigned[numbits](field['name'], self)
                 )
-            if f.type == 'entitymetadata':
-                self.has_metadata = True
-            elif f.type == 'switch' or f.type == 'particledata':
-                switch_name = to_snake_case(f.custom_payload['compareTo'])
-                f.custom_payload['compareTo'] = switch_name
-                for switch in self.fields:
-                    if switch.name == switch_name:
-                        switch.switched_on = True
-                        switch.complex = True
-            if f.complex:
-                self.has_complex = True
-            if f.type in malloc_types:
-                self.has_malloc = True
-            self.fields.append(f)
-        if(self.fields):
-            self.fields[-1].final = True
+        self.storage = lookup_unsigned[total](self.name, self)
+        self.size = total//8
+        self.children = self.fields
+
+    def struct_line(self):
+        struct_fields = [f.struct_line() for f in self.fields]
+        return c.linesequence((
+            c.struct(elems = struct_fields),
+            c.statement(self.name)
+        ))
+
+    def enc_line(self, ret, dest, src):
+        return c.linecomment('mc_bitfield enc_line unimplemented')
+
+    def dec_line(self, ret, dest, src):
+        return c.linecomment('mc_bitfield dec_line unimplemented')
+
+    def size_line(self, ret, field):
+        pass
+
+    # Only called if one or more fields are switched on
+    def walk_line(self, ret, src, max_len, size):
+        seq = c.sequence()
+        seq.append(c.inlineif(c.lth(max_len, self.size), c.returnval(-1)))
+        seq.append(c.statement(self.storage.internal.decl))
+        seq.append(c.statement(c.addeq(size, self.size)))
+        seq.append(c.statement(c.subeq(max_len, self.size)))
+        seq.append(self.storage.dec_line(src, self.storage, src))
+        for idx, field in enumerate(self.fields):
+            if not field.switched:
+                continue
+            mask, shift = self.mask_shift[idx]
+            # I could wrap this in three more c.[func] calls or write one
+            # little f-string, I go with f-string
+            seq.append(c.statement(c.assign(
+                field.internal.decl, f'({self.storage.name}>>{shift})&{mask}'
+            )))
+        return seq
+
+    def free_line(self, field):
+        pass
+
+# ToDo: This needs to switch on particle type
+@mc_data_name('particleData')
+class mc_particledata(custom_type, memory_type):
+    typename = 'mc_particle'
+    postfix = 'particledata'
+
+    def enc_line(self, ret, dest, src):
+        return c.linecomment('mc_particledata enc_line unimplemented')
+
+    def dec_line(self, ret, dest, src):
+        return c.linecomment('mc_particledata dec_line unimplemented')
+
+    def walk_line(self, ret, src, max_len, size):
+        return c.linecomment('mc_particledata walk_line unimplemented')
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_particledata dec_line unimplemented')
+
+    def free_line(self, field):
+        return c.linecomment('mc_particledata free_line unimplemented')
 
 
-def gen_handler(fil, hdr, packet):
-    gen_packet_structure(hdr, packet)
-    hdr.code.append(c.blank())
-    gen_packet_walker(fil, hdr, packet)
-    gen_packet_sizer(fil, hdr, packet)
-    gen_packet_encoder(fil, hdr, packet)
-    gen_packet_decoder(fil, hdr, packet)
-    if packet.has_malloc:
-        gen_packet_freer(fil, hdr, packet)
-    hdr.code.append(c.blank())
+# ToDo: packets are containers with extra steps, we should stop duplicating
+# functionality and extract their common parts into a base class
+class packet:
+    def __init__(self, name, full_name, fields = None):
+        self.name = name
+        self.full_name = full_name
+        self._fields = [] if fields is None else fields
+        self.children = self._fields
+        self.need_free = check_instance(self._fields, memory_type)
+        self.complex = check_instance(self._fields, complex_type)
+
+    def append(self, field):
+        self._fields.append(field)
+        self.need_free = check_instance(self._fields, memory_type)
+        self.complex = check_instance(self._fields, complex_type)
+
+    @property
+    def fields(self):
+        return self._fields
+
+    @fields.setter
+    def fields(self, fields):
+        self.need_free = check_instance(fields, memory_type)
+        self.complex = check_instance(fields, complex_type)
+        self._fields = fields
+
+    @classmethod
+    def from_proto(cls, state, direction, name, data):
+        full_name = '_'.join((state, direction.lower(), name))
+        pckt = cls(name, full_name)
+        for field in data[1]:
+            try:
+                fname = to_snake_case(field['name'])
+            except KeyError as err:
+                fname = 'anonymous'
+                print(f'Anonymous field in: {full_name}')
+            pckt.append(get_type(field['type'], fname, pckt))
+        # ToDo: This is a stupid hack, should be replaced my instantiating
+        # fields in init by passing something like (typ, fname) tuples instead
+        # instead of instantiated fields.
+        return pckt
+
+    def gen_struct(self):
+        struct_fields = [f.struct_line() for f in self.fields]
+        return c.typedef(c.struct(elems = struct_fields), self.full_name)
+
+    def gen_function_defs(self):
+        src = c.variabledecl('*source', 'char')
+        dest = c.variabledecl('*dest', 'char')
+        pak = c.variabledecl('packet', self.full_name)
+        max_len = c.variabledecl('max_len', 'size_t')
+        pak_src = c.variabledecl('source', self.full_name)
+        pak_dest = c.variabledecl('*dest', self.full_name)
+
+        s = c.sequence([
+            c.statement(c.fdecl(
+                f'walk_{self.full_name}', 'int', (src, max_len)
+            )),
+            c.statement(c.fdecl(f'size_{self.full_name}', 'size_t', (pak,))),
+            c.statement(c.fdecl(
+                f'enc_{self.full_name}', 'char *', (dest, pak_src)
+            )),
+            c.statement(c.fdecl(
+                f'dec_{self.full_name}', 'char *', (pak_dest, src)
+            )),
+        ])
+        if self.need_free:
+            s.append(c.statement(
+                c.fdecl(f'free_{self.full_name}', 'void', (pak,))
+            ))
+        return s
+
+    def gen_walkfunc(self):
+        max_len = c.variable('max_len', 'size_t')
+        src = c.variable('source', 'char *')
+
+        if not self.complex:
+            position, total = group_numerics(self.fields, 0)
+            return c.linesequence((c.fdecl(
+                f'walk_{self.full_name}', 'int', (src.decl, max_len.decl)
+            ), c.block((
+                c.inlineif(c.lth(max_len, total), c.returnval(-1)),
+                c.returnval(total)))
+            ))
+
+        ret = c.variable('ret', 'int')
+        size = c.variable('size', 'int')
+        #cfile lacks the capability to group variables declarations
+        blk = c.block(elems=[c.statement(f'{ret.decl}, {c.assign(size, 0)}')])
+        to_free = []
+        position = 0
+        endpos = len(self.fields)
+        while(position < endpos):
+            position, total = group_numerics(self.fields, position)
+            if total:
+                blk.append(c.inlineif(
+                    c.lth(max_len, total), c.returnval(-1)
+                ))
+                if position < endpos:
+                    blk.append(c.statement(c.addeq(size, total)))
+                    blk.append(c.statement(c.addeq(src, total)))
+                    blk.append(c.statement(c.subeq(max_len, total)))
+                else:
+                    del blk[-3:-1]
+                    blk.append(c.returnval(c.addop(size, total)))
+            if position < endpos:
+                field = self.fields[position]
+                position += 1
+                if field.switched:
+                    blk.append(c.statement(field.internal.decl))
+                    if isinstance(field, numeric_type):
+                        blk.append(c.inlineif(
+                            c.lth(max_len, field.size), c.returnval(-1)
+                        ))
+                        blk.append(c.statement(c.addeq(size, field.size)))
+                        blk.append(c.statement(c.subeq(max_len, field.size)))
+                    else:
+                        blk.append(field.walk_line(ret, src, max_len))
+                        blk.append(c.statement(c.addeq(size, ret)))
+                        blk.append(c.statement(c.subeq(max_len, ret)))
+                    if isinstance(field, memory_type):
+                        blk.append(field.walkdec_line(src, field, src))
+                        to_free.append(field)
+                    else:
+                        blk.append(field.dec_line(src, field, src))
+                elif isinstance(field, custom_type):
+                    blk.append(field.walk_line(ret, src, max_len, size))
+                    if position >= endpos:
+                        blk.append(c.returnval(size))
+                else:
+                    blk.append(field.walk_line(ret, src, max_len))
+                    if position >= endpos:
+                        blk.append(c.returnval(c.addop(size, ret)))
+                    else:
+                        blk.append(c.statement(c.addeq(size, ret)))
+                        blk.append(c.statement(c.addeq(src, ret)))
+                        blk.append(c.statement(c.subeq(max_len, ret)))
+        for field in to_free:
+            blk.append(field.free_line(field))
+
+        return c.linesequence((
+            c.fdecl(f'walk_{self.full_name}', 'int', (src.decl, max_len.decl)),
+            blk
+        ))
+
+    def gen_sizefunc(self):
+        pak = c.variabledecl('packet', self.full_name)
+        if not self.complex:
+            position, total = group_numerics(self.fields, 0)
+            return c.linesequence((
+                c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)),
+                c.block((c.returnval(total),))
+            ))
+        blk = c.block([c.linecomment('Complex sizefunc unimplemented')])
+        blk.append(c.returnval(0))
+        return c.linesequence((
+            c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)), blk
+        ))
+
+    def gen_decfunc(self):
+        dest = c.variabledecl('packet', self.full_name)
+        destptr = c.variabledecl('*packet', self.full_name)
+        src = c.variable('source', 'char *')
+        blk = c.block()
+        for field in self.fields:
+            v = c.variable(f'{dest.name}->{field.name}', field.typename)
+            blk.append(field.dec_line(src, v, src))
+        blk.append(c.returnval(src))
+        return c.linesequence((c.fdecl(
+            f'dec_{self.full_name}', 'char *', (destptr, src.decl)
+        ), blk))
+
+    def gen_encfunc(self):
+        dest = c.variable('dest', 'char *')
+        src = c.variable('source', self.full_name)
+        blk = c.block()
+        for field in self.fields:
+            v = c.variable(f'{src.name}.{field.name}', field.typename)
+            blk.append(field.enc_line(dest, dest, v))
+        blk.append(c.returnval(dest))
+        return c.linesequence((c.fdecl(
+            f'enc_{self.full_name}', 'char *', (dest.decl, src.decl)
+        ), blk))
+
+    def gen_freefunc(self):
+        pass
+
+
+import minecraft_data
 
 def run(version):
     data = minecraft_data(version).protocol
-    fil = c.cfile(version.replace('.', '_') + '_proto.c')
     hdr = c.hfile(version.replace('.', '_') + '_proto.h')
-    comment = c.comment(
-        "\n  This file was generated by mcd2c.py" +
-        "\n  It should not be edited by hand.\n"
-    )
-    hdr.code.append(comment)
-    hdr.code.append(c.blank())
-    hdr.code.append(c.sysinclude('stddef.h'))
-    hdr.code.append(c.include("datautils.h"))
-    hdr.code.append(c.blank())
-    fil.code.append(comment)
-    fil.code.append(c.blank())
-    fil.code.append(c.sysinclude('stdlib.h'))
-    fil.code.append(c.sysinclude('string.h'))
-    fil.code.append(c.include(hdr.path))
-    fil.code.append(c.blank())
-    for proto_state in proto_states:
-        for direction in directions:
-            #lol wtf
-            packet_map = data[proto_state][direction]['types']['packet'][1][1]['type'][1]['fields']
+    hdr.guard = 'H_' + hdr.guard
+    comment = c.blockcomment((
+        c.line('This file was generated by mcd2c.py'),
+        c.line('It should not be edited by hand'),
+    ))
+    hdr.append(comment)
+    hdr.append(c.blank())
+    hdr.append(c.include('stddef.h', True))
+    hdr.append(c.include('sds.h'))
+    hdr.append(c.include('datautils.h'))
+    hdr.append(c.blank())
+
+    impl = c.cfile(version.replace('.', '_') + '_proto.c')
+    impl.append(comment)
+    impl.append(c.blank())
+    impl.append(c.include(hdr.path))
+    impl.append(c.blank())
+
+    packets = []
+    for state in "handshaking", "login", "status", "play":
+        for direction in "toClient", "toServer":
+            packet_map = data[state][direction]['types']['packet'][1][1]['type'][1]['fields']
             for name, id in packet_map.items():
-                packet = _packet(proto_state, direction, name, data[proto_state][direction]['types'][id])
-                gen_handler(fil, hdr, packet)
-    out = open(fil.path, 'w')
-    out.write(str(fil))
-    out.close()
-    out = open(hdr.path, 'w')
-    out.write(str(hdr))
-    out.close()
+                pd = data[state][direction]['types'][id]
+                packets.append(packet.from_proto(state, direction, name, pd))
+
+    for p in packets:
+        if(p.fields):
+            hdr.append(c.blank())
+            hdr.append(p.gen_struct())
+            hdr.append(c.blank())
+            hdr.append(p.gen_function_defs())
+
+            impl.append(c.blank())
+            impl.append(p.gen_walkfunc())
+            impl.append(c.blank())
+            impl.append(p.gen_sizefunc())
+            impl.append(c.blank())
+            impl.append(p.gen_decfunc())
+            impl.append(c.blank())
+            impl.append(p.gen_encfunc())
+
+    fp = open(hdr.path, 'w+')
+    fp.write(str(hdr))
+    fp.close()
+    fp = open(impl.path, 'w+')
+    fp.write(str(impl))
+    fp.close()
 
 if __name__ == '__main__':
-    import sys
-    version = sys.argv[1]
-    print('Generating version', version)
-    run(version)
+    run('1.14.4')
