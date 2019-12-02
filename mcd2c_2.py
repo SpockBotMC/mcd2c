@@ -370,11 +370,9 @@ class mc_array(custom_type, memory_type):
 
     def walk_line(self, ret, src, max_len, size):
         seq = c.sequence()
-        # Hacking around cfile's lack of pointer support
-        name = self.base.name[1:]
         if self.self_contained:
             count_var = c.variable(
-                f'{name}_count', self.count.typename
+                f'{self.name}_count', self.count.typename
             )
             if isinstance(self.count, numeric_type):
                 seq.append(c.inlineif(
