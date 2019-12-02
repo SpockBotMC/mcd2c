@@ -771,12 +771,12 @@ class mc_switch(custom_type):
                 continue
             if first:
                 cf = c.nospace_ifcond(c.wrap(c.fcall(
-                    'sdscmp', 'int', (f'\'{caseval}\'', self.cp_short)
+                    'sdscmp', 'int', (f'"{caseval}"', self.cp_short)
                 ), True))
                 first = False
             else:
                 cf = c.elifcond(c.wrap(c.fcall(
-                    'sdscmp', 'int', (f'\'{caseval}\'', self.cp_short)
+                    'sdscmp', 'int', (f'"{caseval}"', self.cp_short)
                 ), True))
             if isinstance(field, void_type):
                 cf.append(c.linecomment('void condition'))

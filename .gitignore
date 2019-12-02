@@ -10,3 +10,4 @@ CMakeCache.txt
 compile_commands.json
 Makefile
 log
+*_proto.*
