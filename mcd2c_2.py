@@ -662,7 +662,6 @@ def search_down(name, field):
                 return ret
     return None
 
-
 def search_fields(name, parent):
     while True:
         for field in parent.children:
@@ -691,6 +690,38 @@ def generic_walk_func(app, field, ret, src, max_len, size):
             app.append(c.statement(c.addeq(src, ret)))
             app.append(c.statement(c.subeq(max_len, ret)))
 
+# compare is a protodef compareTo string
+# dest is a C struct/variable string to the switch variable
+# By their powers combined we find our way to the switched variable
+def get_switched_path(compare, dest, field):
+    rf = dest.rfind('.')
+    parent = field.parent
+    if isinstance(parent, packet):
+        dest = dest[:dest.find('->') + 2]
+    else:
+        dest = dest[:dest.rfind('.')]
+    for token in compare.split('/'):
+        if token == '..':
+            parent = parent.parent
+            # Only containers count for '..' lesser types like switches and
+            # arrays must be stripped away like the inconsequential trash they
+            # are.
+            while (
+                not isinstance(parent, mc_container) and
+                not isinstance(parent, packet)
+            ):
+                dest = dest[:dest.rfind('.')]
+                parent = parent.parent
+            if isinstance(parent, packet):
+                dest = dest[:dest.find('->') + 2]
+            else:
+                dest = dest[:dest.rfind('.')]
+        else:
+            if isinstance(parent, packet):
+                dest = f'{dest}{to_snake_case(token)}'
+            else:
+                dest = f'{dest}.{to_snake_case(token)}'
+    return dest
 
 # Switches can do an almost impossible to implement thing, they can move UP the
 # structure hierarchy to look for values. This is... challenging to say the
@@ -771,7 +802,84 @@ class mc_switch(custom_type):
         return c.linecomment('mc_switch enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_switch dec_line unimplemented')
+        swvar = c.variable(get_switched_path(self.compare, dest.name, self))
+        if self.isbool and self.optional:
+            v = c.variable(dest.name)
+            if self.optional_case:
+                return c.ifcond(swvar, (self.fields[0].dec_line(ret, v, src),))
+            else:
+                return c.ifcond(c.wrap(swvar, True), (
+                    self.fields[0].dec_line(ret, v, src),
+                ))
+
+        if not self.string_switch:
+            sw = c.switch(swvar)
+            completed_fields = []
+            for caseval, field in self.map.items():
+                for idx, temp in enumerate(completed_fields):
+                    if field == temp:
+                        sw.insert(idx, c.case(caseval, fall=True))
+                        completed_fields.insert(idx, field)
+                        break
+                else:
+                    cf = c.case(caseval)
+                    if isinstance(field, void_type):
+                        cf.append(c.linecomment('void condition'))
+                    else:
+                        if self.optional:
+                            v = c.variable(dest.name)
+                        else:
+                            v = c.variable(f'{dest.name}.{field.name}')
+                        cf.append(field.dec_line(ret, v, src))
+                    completed_fields.append(field)
+                    sw.append(cf)
+            if self.has_default:
+                for idx, temp in enumerate(completed_fields):
+                    if self.default_typ == temp:
+                        sw.insert(idx, c.defaultcase())
+                        break
+                else:
+                    df = c.defaultcase()
+                    if self.optional:
+                        v = c.variable(dest.name)
+                    else:
+                        v = c.variable(f'{dest.name}.{field.name}')
+                    df.append(field.dec_line(ret, v, src))
+                    sw.append(df)
+            return sw
+        first = True
+        sw = c.linesequence()
+        for caseval, field in self.map.items():
+            if not self.has_default and isinstance(field, void_type):
+                continue
+            if first:
+                cf = c.nospace_ifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swvar)
+                ), True))
+                first = False
+            else:
+                cf = c.elifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swvar)
+                ), True))
+            if isinstance(field, void_type):
+                cf.append(c.linecomment('void condition'))
+            else:
+                if self.optional:
+                    v = c.variable(dest.name)
+                else:
+                    v = c.variable(f'{dest.name}.{field.name}')
+                cf.append(field.dec_line(ret, v, src))
+            sw.append(cf)
+        if self.has_default:
+            df = c.elsecond()
+            if self.optional:
+                v = c.variable(dest.name)
+            else:
+                v = c.variable(f'{dest.name}.{field.name}')
+            df.append(field.dec_line(ret, v, src))
+            sw.append(df)
+        return sw
+
 
     def size_line(self, ret, field):
         return c.linecomment('mc_switch size_line unimplemented')
@@ -834,7 +942,7 @@ class mc_switch(custom_type):
                 generic_walk_func(cf, field, ret, src, max_len, size)
             sw.append(cf)
         if self.has_default:
-            df = c.defaultcase()
+            df = c.elsecond()
             generic_walk_func(
                 df, self.default_typ, ret, src, max_len, size
             )
@@ -885,7 +993,6 @@ class mc_bitfield(custom_type, numeric_type):
         self.size = total//8
         self.children = self.fields
 
-
     def struct_line(self):
         struct_fields = [f.struct_line() for f in self.fields]
         return c.linesequence((
@@ -920,7 +1027,6 @@ class mc_bitfield(custom_type, numeric_type):
                 field.internal.decl, f'({self.storage.name}>>{shift})&{mask}'
             )))
         return seq
-
 
     def free_line(self, field):
         pass

@@ -247,8 +247,12 @@ class nospace_ifcond(_unspacedconditional):
     keyword = 'if'
 class elifcond(_unspacedconditional):
     keyword = 'else if'
-class elsecond(_unspacedconditional):
+class elsecond(block):
     keyword = 'else'
+
+    def __str__(self):
+        return f'{self.keyword} {super().__str__()}'
+
 class switch(conditional):
     keyword = 'switch'
 
@@ -321,7 +325,7 @@ class forloop(block):
         return f'{i}{self.keyword}({l2}) {super().__str__()}'
 
 class variable:
-    def __init__(self, name, typename, array=0):
+    def __init__(self, name, typename=None, array=0):
         self.name = name
         self.typename = typename
         self.array = array
