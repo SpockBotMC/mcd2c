@@ -164,20 +164,6 @@ class mc_varlong(complex_type):
     typename = 'int64_t'
     postfix = 'varlong'
 
-@mc_data_name('restBuffer')
-class mc_restbuffer(complex_type):
-    typename = 'mc_buffer'
-    postfix = 'buffer'
-
-    def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_restbuffer dec_line unimplemented')
-
-    def size_line(self, ret, field):
-        pass
-
-    def free_line(self, field):
-        pass
-
 # Types which require some level of memory management
 class memory_type(complex_type):
     def dec_line(self, ret, dest, src):
@@ -315,6 +301,23 @@ class mc_buffer(custom_type, memory_type):
 
     def free_line(self, field):
         pass
+
+@mc_data_name('restBuffer')
+class mc_restbuffer(memory_type):
+    typename = 'mc_buffer'
+    postfix = 'buffer'
+
+    def dec_line(self, ret, dest, src):
+        return c.linecomment('mc_restbuffer dec_line unimplemented')
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_restbuffer size_line unimplemented')
+
+    def walk_line(self, ret, src, max_len):
+        return c.linecomment('mc_restbuffer walk_line unimplemented')
+
+    def free_line(self, field):
+        return c.linecomment('mc_restbuffer free_line unimplemented')
 
 @mc_data_name('array')
 class mc_array(custom_type, memory_type):
