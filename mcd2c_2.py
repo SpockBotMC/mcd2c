@@ -167,21 +167,15 @@ class mc_varlong(complex_type):
 # Types which require some level of memory management
 class memory_type(complex_type):
     def dec_line(self, ret, dest, src):
-        assign = c.wrap(c.assign(
-            ret,
-            c.fcall(
-                f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
-            )
-        ), True)
+        assign = c.wrap(c.assign(ret, c.fcall(
+            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
+        )), True)
         return c.inlineif(assign, c.returnval('NULL'))
 
     def walkdec_line(self, ret, dest, src):
-        assign = c.wrap(c.assign(
-            ret,
-            c.fcall(
-                f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
-            )
-        ), True)
+        assign = c.wrap(c.assign(ret, c.fcall(
+            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
+        )), True)
         return c.inlineif(assign, c.returnval(-1))
 
     def free_line(self, field):
@@ -270,10 +264,28 @@ class mc_buffer(custom_type, memory_type):
         )), c.statement(self.name)))
 
     def enc_line(self, ret, dest, src):
-        return c.linecomment('mc_buffer enc_line unimplemented')
+        seq = c.sequence()
+        basevar = c.variable(f'{src}.base', 'char *')
+        lenvar = c.variable(f'{src}.len', self.ln.typename)
+        seq.append(self.ln.enc_line(ret, dest, lenvar))
+        seq.append(c.statement(c.assign(dest, c.fcall(
+            'memcpy', 'void *', (dest, basevar, lenvar)
+        ))))
+        return seq
 
     def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_buffer dec_line unimplemented')
+        seq = c.sequence()
+        basevar = c.variable(f'{dest}.base', 'char *')
+        lenvar = c.variable(f'{dest}.len', self.ln.typename)
+        seq.append(self.ln.dec_line(ret, lenvar, src))
+        seq.append(c.inlineif(c.wrap(c.assign(
+            basevar, c.fcall('malloc', 'void *', (lenvar,))
+        ), True), c.returnval('NULL')))
+        seq.append(c.statement(c.fcall('memcpy', 'void *', (
+            basevar, src, lenvar
+        ))))
+        seq.append(c.statement(c.addeq(src, lenvar)))
+        return seq
 
     def walk_line(self, ret, src, max_len, size):
         seq = c.sequence()
@@ -298,9 +310,11 @@ class mc_buffer(custom_type, memory_type):
         seq.append(c.statement(c.subeq(max_len, lenvar)))
         return seq
 
+    def size_line(self, ret, field):
+        return c.linecomment('mc_buffer size_line unimplemented')
 
     def free_line(self, field):
-        pass
+        return c.linecomment('mc_buffer free_line unimplemented')
 
 @mc_data_name('restBuffer')
 class mc_restbuffer(memory_type):
@@ -1071,11 +1085,8 @@ class packet:
         src = c.variable('source', 'char *')
         blk = c.block()
         for field in self.fields:
-            if not isinstance(field, custom_type) and not isinstance(field, memory_type):
-                v = c.variable(f'{dest.name}->{field.name}', field.typename)
-                blk.append(field.dec_line(src, v, src))
-            else:
-                blk.append(c.linecomment('custom_type unimplemented'))
+            v = c.variable(f'{dest.name}->{field.name}', field.typename)
+            blk.append(field.dec_line(src, v, src))
         blk.append(c.returnval(src))
         return c.linesequence((c.fdecl(
             f'dec_{self.full_name}', 'char *', (destptr, src.decl)
