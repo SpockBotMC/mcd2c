@@ -35,9 +35,9 @@ class generic_type:
         return c.statement(self.internal.decl)
 
     def enc_line(self, ret, dest, src):
-        return c.statement(
-            c.assign(ret, c.fcall(f'enc_{self.postfix}', (dest, src)))
-        )
+        return c.statement(c.assign(
+            ret, c.fcall(f'enc_{self.postfix}', 'char *', (dest, src))
+        ))
 
     def dec_line(self, ret, dest, src):
         return c.statement(c.assign(ret, c.fcall(
@@ -284,7 +284,7 @@ class mc_buffer(custom_type, memory_type):
         )), c.statement(self.name)))
 
     def enc_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_buffer enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_buffer dec_line unimplemented')
@@ -357,13 +357,13 @@ class mc_array(custom_type, memory_type):
         return self.base.struct_line()
 
     def enc_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_array enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_array dec_line unimplemented')
 
     def size_line(self, ret, field):
-        pass
+        return c.linecomment('mc_array size_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size):
         seq = c.sequence()
@@ -488,13 +488,13 @@ class mc_container(custom_type):
         ))
 
     def enc_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_container enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_container dec_line unimplemented')
 
     def size_line(self, ret, field):
-        pass
+        return c.linecomment('mc_container size_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size):
         seq = c.sequence()
@@ -563,13 +563,13 @@ class mc_option(custom_type):
         )), c.statement(self.name)))
 
     def enc_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_option enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_option dec_line unimplemented')
 
     def size_line(self, ret, field):
-        pass
+        return c.linecomment('mc_option size_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size):
         func_lines = []
@@ -718,13 +718,13 @@ class mc_switch(custom_type):
         ))
 
     def enc_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_switch enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_switch dec_line unimplemented')
 
     def size_line(self, ret, field):
-        pass
+        return c.linecomment('mc_switch size_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size):
         if not self.string_switch and self.isbool and self.optional:
@@ -791,9 +791,6 @@ class mc_switch(custom_type):
             sw.append(df)
         return sw
 
-
-
-
     def free_line(self, field):
         pass
 
@@ -847,7 +844,7 @@ class mc_bitfield(custom_type, numeric_type):
         ))
 
     def enc_line(self, ret, dest, src):
-        pass
+        return c.linecomment('mc_bitfield enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_bitfield dec_line unimplemented')
@@ -878,20 +875,27 @@ class mc_bitfield(custom_type, numeric_type):
     def free_line(self, field):
         pass
 
+# ToDo: This needs to switch on particle type
 @mc_data_name('particleData')
 class mc_particledata(custom_type, memory_type):
     typename = 'mc_particle'
     postfix = 'particledata'
 
-    def dec_line(self, ret, dest, src, part_type):
-        return c.statement(c.assign(
-            ret, c.fcall(
-                f'dec_{self.postfix}', 'char *', (dest, src, part_type)
-            )
-        ))
+    def enc_line(self, ret, dest, src):
+        return c.linecomment('mc_particledata enc_line unimplemented')
+
+    def dec_line(self, ret, dest, src):
+        return c.linecomment('mc_particledata dec_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size):
-        return c.linecomment('particledata not yet implemented')
+        return c.linecomment('mc_particledata walk_line unimplemented')
+
+    def size_line(self, ret, field):
+        return c.linecomment('mc_particledata dec_line unimplemented')
+
+    def free_line(self, field):
+        return c.linecomment('mc_particledata free_line unimplemented')
+
 
 # ToDo: packets are containers with extra steps, we should stop duplicating
 # functionality and extract their common parts into a base class
@@ -1064,12 +1068,21 @@ class packet:
             else:
                 blk.append(c.linecomment('custom_type unimplemented'))
         blk.append(c.returnval(src))
-        return c.linesequence((
-            c.fdecl(f'dec_{self.full_name}', 'char *', (destptr, src.decl)), blk
-        ))
+        return c.linesequence((c.fdecl(
+            f'dec_{self.full_name}', 'char *', (destptr, src.decl)
+        ), blk))
 
     def gen_encfunc(self):
-        pass
+        dest = c.variable('dest', 'char *')
+        src = c.variable('source', self.full_name)
+        blk = c.block()
+        for field in self.fields:
+            v = c.variable(f'{src.name}.{field.name}', field.typename)
+            blk.append(field.enc_line(dest, dest, v))
+        blk.append(c.returnval(dest))
+        return c.linesequence((c.fdecl(
+            f'enc_{self.full_name}', 'char *', (dest.decl, src.decl)
+        ), blk))
 
     def gen_freefunc(self):
         pass
@@ -1119,6 +1132,8 @@ def run(version):
             impl.append(p.gen_sizefunc())
             impl.append(c.blank())
             impl.append(p.gen_decfunc())
+            impl.append(c.blank())
+            impl.append(p.gen_encfunc())
 
     fp = open(hdr.path, 'w+')
     fp.write(str(hdr))
