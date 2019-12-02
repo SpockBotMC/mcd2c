@@ -377,7 +377,25 @@ class mc_array(custom_type, memory_type):
         return c.linecomment('mc_array enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_array dec_line unimplemented')
+        seq = c.sequence()
+        if self.self_contained:
+            countvar = c.variable(f'{dest.name}.count', self.count.typename)
+            seq.append(self.count.dec_line(ret, countvar, src))
+            depth = get_depth(self)
+            loopvar = c.variable(f'i_{depth}', 'size_t')
+            basevar = c.variable(f'{dest.name}.base', None)
+            seq.append(c.inlineif(c.wrap(c.assign(basevar, c.fcall(
+                'malloc', 'void *', (f'sizeof(*{basevar}) * {countvar}',)
+            )), True), c.returnval('NULL')))
+            basevar = c.variable(f'{basevar}[{loopvar}]', None)
+            seq.append(c.forloop(
+                c.assign(loopvar.decl, 0),
+                c.lth(loopvar, countvar),
+                c.incop(loopvar),
+                (self.base.dec_line(ret, basevar, src),)
+            ))
+            return seq
+        return c.linecomment('non-selfcontained mc_array unimplemented')
 
     def size_line(self, ret, field):
         return c.linecomment('mc_array size_line unimplemented')
@@ -514,7 +532,11 @@ class mc_container(custom_type):
         return c.linecomment('mc_container enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_container dec_line unimplemented')
+        seq = c.sequence()
+        for field in self.fields:
+            v = c.variable(f'{dest.name}.{field.name}', field.typename)
+            seq.append(field.dec_line(src, v, src))
+        return seq
 
     def size_line(self, ret, field):
         return c.linecomment('mc_container size_line unimplemented')
@@ -589,21 +611,26 @@ class mc_option(custom_type):
         return c.linecomment('mc_option enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_option dec_line unimplemented')
+        seq = c.sequence()
+        optvar = c.variable(f'{dest.name}.opt', self.opt.typename)
+        seq.append(self.opt.dec_line(src, optvar, src))
+        valvar = c.variable(f'{dest.name}.val', None)
+        seq.append(c.ifcond(optvar, (self.val.dec_line(src, valvar, src),)))
+        return seq
 
     def size_line(self, ret, field):
         return c.linecomment('mc_option size_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size):
-        func_lines = []
-        func_lines.append(c.inlineif(
+        seq = c.sequence()
+        seq.append(c.inlineif(
             c.lth(max_len, self.opt.size), c.returnval(-1)
         ))
         optvar = c.variable(f'{self.name}_opt', self.opt.typename)
-        func_lines.append(c.statement(optvar.decl))
-        func_lines.append(self.opt.dec_line(src, optvar, src))
-        func_lines.append(c.statement(c.addeq(size, self.opt.size)))
-        func_lines.append(c.statement(c.subeq(max_len, self.opt.size)))
+        seq.append(c.statement(optvar.decl))
+        seq.append(self.opt.dec_line(src, optvar, src))
+        seq.append(c.statement(c.addeq(size, self.opt.size)))
+        seq.append(c.statement(c.subeq(max_len, self.opt.size)))
         ifelems = []
         if isinstance(self.val, custom_type):
             ifelems.append(self.val.walk_line(ret, src, max_len, size))
@@ -619,8 +646,8 @@ class mc_option(custom_type):
             ifelems.append(c.statement(c.addeq(size, ret)))
             ifelems.append(c.statement(c.addeq(src, ret)))
             ifelems.append(c.statement(c.subeq(max_len, ret)))
-        func_lines.append(c.ifcond(optvar, ifelems))
-        return c.sequence(func_lines)
+        seq.append(c.ifcond(optvar, ifelems))
+        return seq
 
     def free_line(self, field):
         pass
