@@ -374,6 +374,14 @@ class mc_array(custom_type, memory_type):
             count_var = c.variable(
                 f'{self.name}_count', self.count.typename
             )
+            # Hack for arrays containing arrays
+            if self.name == '*base':
+                depth = 0
+                parent = self.parent
+                while parent.name == '*base':
+                    depth += 1
+                    parent = self.parent
+                count_var.name = f'{self.parent.name}{depth}_count'
             if isinstance(self.count, numeric_type):
                 seq.append(c.inlineif(
                     c.lth(max_len, self.count.size), c.returnval(-1))
