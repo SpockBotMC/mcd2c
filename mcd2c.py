@@ -1243,6 +1243,18 @@ class packet:
 
 import minecraft_data
 
+def gen_enums(enums):
+    seq = c.sequence()
+    for state, dir_enum in enums.items():
+        for direction, names in dir_enum.items():
+            if names:
+                enum = c.enum(f'{state}_{to_snake_case(direction)}_ids')
+                for name in names:
+                    enum.append(c.line(name))
+                seq.append(c.statement(enum))
+                seq.append(c.blank())
+    return seq
+
 def run(version):
     data = minecraft_data(version).protocol
     hdr = c.hfile(version.replace('.', '_') + '_proto.h')
@@ -1265,12 +1277,27 @@ def run(version):
     impl.append(c.blank())
 
     packets = []
+
+
+    import operator
+    enums = {}
     for state in "handshaking", "login", "status", "play":
+        enums[state] = {}
         for direction in "toClient", "toServer":
+            enums[state][direction] = []
             packet_map = data[state][direction]['types']['packet'][1][1]['type'][1]['fields']
+            enum_map = data[state][direction]['types']['packet'][1][0]['type'][1]['mappings']
             for name, id in packet_map.items():
                 pd = data[state][direction]['types'][id]
                 packets.append(packet.from_proto(state, direction, name, pd))
+            temp = [(packet_id, name) for packet_id, name in enum_map.items()]
+            temp.sort(key = operator.itemgetter(0))
+            for packet_id, name in temp:
+                enums[state][direction].append(
+                    f'{state}_{to_snake_case(direction)}_{name}_id'
+                )
+
+    hdr.append(gen_enums(enums))
 
     for p in packets:
         if(p.fields):

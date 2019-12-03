@@ -215,10 +215,17 @@ class blocktype(block):
 
 class struct(blocktype):
     keyword = 'struct'
-
-
 class union(blocktype):
     keyword = 'union'
+class enum(blocktype):
+    keyword = 'enum'
+
+    def __str__(self):
+        inner = ',\n'.join([str(elem) for elem in self.elems])
+        i = self.indent * c_indent_char
+        if self.name:
+            return f'{self.keyword} {self.name} {{\n{inner}\n{i}}}'
+        return f'{self.keyword} {{\n{inner}\n{i}}}'
 
 
 class conditional(block):
