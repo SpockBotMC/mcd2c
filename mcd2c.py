@@ -346,6 +346,7 @@ class mc_array(custom_type, memory_type):
             self.base = get_type(data['type'], '*base', self)
         else:
             self.self_contained = False
+            self.compare = data['count']
             self.external_count = search_fields(
                 to_snake_case(data['count']), parent
             )
@@ -378,24 +379,25 @@ class mc_array(custom_type, memory_type):
 
     def dec_line(self, ret, dest, src):
         seq = c.sequence()
+        loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
         if self.self_contained:
+            basevar = c.variable(f'{dest.name}.base')
             countvar = c.variable(f'{dest.name}.count', self.count.typename)
             seq.append(self.count.dec_line(ret, countvar, src))
-            depth = get_depth(self)
-            loopvar = c.variable(f'i_{depth}', 'size_t')
-            basevar = c.variable(f'{dest.name}.base', None)
-            seq.append(c.inlineif(c.wrap(c.assign(basevar, c.fcall(
-                'malloc', 'void *', (f'sizeof(*{basevar}) * {countvar}',)
-            )), True), c.returnval('NULL')))
-            basevar = c.variable(f'{basevar}[{loopvar}]', None)
-            seq.append(c.forloop(
-                c.assign(loopvar.decl, 0),
-                c.lth(loopvar, countvar),
-                c.incop(loopvar),
-                (self.base.dec_line(ret, basevar, src),)
-            ))
-            return seq
-        return c.linecomment('non-selfcontained mc_array unimplemented')
+        else:
+            countvar = c.variable(get_switched_path(self.compare, dest.name, self))
+            basevar = c.variable(f'{dest.name}')
+        seq.append(c.inlineif(c.wrap(c.assign(basevar, c.fcall(
+            'malloc', 'void *', (f'sizeof(*{basevar}) * {countvar}',)
+        )), True), c.returnval('NULL')))
+        basevar = c.variable(f'{basevar}[{loopvar}]')
+        seq.append(c.forloop(
+            c.assign(loopvar.decl, 0),
+            c.lth(loopvar, countvar),
+            c.incop(loopvar),
+            (self.base.dec_line(ret, basevar, src),)
+        ))
+        return seq
 
     def size_line(self, ret, field):
         return c.linecomment('mc_array size_line unimplemented')
