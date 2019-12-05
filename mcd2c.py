@@ -1006,7 +1006,18 @@ class mc_bitfield(custom_type, numeric_type):
         return c.linecomment('mc_bitfield enc_line unimplemented')
 
     def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_bitfield dec_line unimplemented')
+        seq = c.sequence()
+        seq.append(c.statement(self.storage.internal.decl))
+        seq.append(self.storage.dec_line(ret, self.storage, src))
+        for idx, field in enumerate(self.fields):
+            mask, shift = self.mask_shift[idx]
+            # I could wrap this in three more c.[func] calls or write one
+            # little f-string, I go with f-string
+            seq.append(c.statement(c.assign(
+                f'{dest.name}.{field.name}',
+                f'({self.storage.name}>>{shift})&{mask}'
+            )))
+        return seq
 
     def size_line(self, ret, field):
         pass
@@ -1018,13 +1029,11 @@ class mc_bitfield(custom_type, numeric_type):
         seq.append(c.statement(self.storage.internal.decl))
         seq.append(c.statement(c.addeq(size, self.size)))
         seq.append(c.statement(c.subeq(max_len, self.size)))
-        seq.append(self.storage.dec_line(src, self.storage, src))
+        seq.append(self.storage.dec_line(ret, self.storage, src))
         for idx, field in enumerate(self.fields):
             if not field.switched:
                 continue
             mask, shift = self.mask_shift[idx]
-            # I could wrap this in three more c.[func] calls or write one
-            # little f-string, I go with f-string
             seq.append(c.statement(c.assign(
                 field.internal.decl, f'({self.storage.name}>>{shift})&{mask}'
             )))
