@@ -375,14 +375,30 @@ class mc_array(custom_type, memory_type):
         return self.base.struct_line()
 
     def enc_line(self, ret, dest, src):
-        return c.linecomment('mc_array enc_line unimplemented')
+        seq = c.sequence()
+        loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
+        if self.self_contained:
+            basevar = c.variable(f'{src.name}.base')
+            countvar = c.variable(f'{src.name}.count')
+            seq.append(self.count.enc_line(ret, dest, countvar))
+        else:
+            countvar = c.variable(get_switched_path(self.compare, src.name, self, False))
+            basevar = c.variable(f'{src.name}')
+        basevar = c.variable(f'{basevar}[{loopvar}]')
+        seq.append(c.forloop(
+            c.assign(loopvar.decl, 0),
+            c.lth(loopvar, countvar),
+            c.incop(loopvar),
+            (self.base.enc_line(ret, dest, basevar),)
+        ))
+        return seq
 
     def dec_line(self, ret, dest, src):
         seq = c.sequence()
         loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
         if self.self_contained:
             basevar = c.variable(f'{dest.name}.base')
-            countvar = c.variable(f'{dest.name}.count', self.count.typename)
+            countvar = c.variable(f'{dest.name}.count')
             seq.append(self.count.dec_line(ret, countvar, src))
         else:
             countvar = c.variable(get_switched_path(self.compare, dest.name, self))
@@ -531,13 +547,17 @@ class mc_container(custom_type):
         ))
 
     def enc_line(self, ret, dest, src):
-        return c.linecomment('mc_container enc_line unimplemented')
+        seq = c.sequence()
+        for field in self.fields:
+            v = c.variable(f'{src.name}.{field.name}', field.typename)
+            seq.append(field.enc_line(ret, dest, v))
+        return seq
 
     def dec_line(self, ret, dest, src):
         seq = c.sequence()
         for field in self.fields:
             v = c.variable(f'{dest.name}.{field.name}', field.typename)
-            seq.append(field.dec_line(src, v, src))
+            seq.append(field.dec_line(ret, v, src))
         return seq
 
     def size_line(self, ret, field):
@@ -610,14 +630,19 @@ class mc_option(custom_type):
         )), c.statement(self.name)))
 
     def enc_line(self, ret, dest, src):
-        return c.linecomment('mc_option enc_line unimplemented')
+        seq = c.sequence()
+        optvar = c.variable(f'{src.name}.opt')
+        seq.append(self.opt.enc_line(ret, dest, optvar))
+        valvar = c.variable(f'{src.name}.val', None)
+        seq.append(c.ifcond(optvar, (self.val.enc_line(ret, dest, valvar),)))
+        return seq
 
     def dec_line(self, ret, dest, src):
         seq = c.sequence()
-        optvar = c.variable(f'{dest.name}.opt', self.opt.typename)
-        seq.append(self.opt.dec_line(src, optvar, src))
+        optvar = c.variable(f'{dest.name}.opt')
+        seq.append(self.opt.dec_line(ret, optvar, src))
         valvar = c.variable(f'{dest.name}.val', None)
-        seq.append(c.ifcond(optvar, (self.val.dec_line(src, valvar, src),)))
+        seq.append(c.ifcond(optvar, (self.val.dec_line(ret, valvar, src),)))
         return seq
 
     def size_line(self, ret, field):
@@ -695,10 +720,10 @@ def generic_walk_func(app, field, ret, src, max_len, size):
 # compare is a protodef compareTo string
 # dest is a C struct/variable string to the switch variable
 # By their powers combined we find our way to the switched variable
-def get_switched_path(compare, dest, field):
+def get_switched_path(compare, dest, field, decode=True):
     rf = dest.rfind('.')
     parent = field.parent
-    if isinstance(parent, packet):
+    if isinstance(parent, packet) and decode:
         dest = dest[:dest.find('->') + 2]
     else:
         dest = dest[:dest.rfind('.')]
@@ -714,12 +739,12 @@ def get_switched_path(compare, dest, field):
             ):
                 dest = dest[:dest.rfind('.')]
                 parent = parent.parent
-            if isinstance(parent, packet):
+            if isinstance(parent, packet) and decode:
                 dest = dest[:dest.find('->') + 2]
             else:
                 dest = dest[:dest.rfind('.')]
         else:
-            if isinstance(parent, packet):
+            if isinstance(parent, packet) and decode:
                 dest = f'{dest}{to_snake_case(token)}'
             else:
                 dest = f'{dest}.{to_snake_case(token)}'
@@ -801,7 +826,83 @@ class mc_switch(custom_type):
         ))
 
     def enc_line(self, ret, dest, src):
-        return c.linecomment('mc_switch enc_line unimplemented')
+        swvar = c.variable(get_switched_path(self.compare, src.name, self, False))
+        if self.isbool and self.optional:
+            v = c.variable(src.name)
+            if self.optional_case:
+                return c.ifcond(swvar, (self.fields[0].enc_line(ret, dest, v),))
+            else:
+                return c.ifcond(c.wrap(swvar, True), (
+                    self.fields[0].enc_line(ret, dest, v),
+                ))
+
+        if not self.string_switch:
+            sw = c.switch(swvar)
+            completed_fields = []
+            for caseval, field in self.map.items():
+                for idx, temp in enumerate(completed_fields):
+                    if field == temp:
+                        sw.insert(idx, c.case(caseval, fall=True))
+                        completed_fields.insert(idx, field)
+                        break
+                else:
+                    cf = c.case(caseval)
+                    if isinstance(field, void_type):
+                        cf.append(c.linecomment('void condition'))
+                    else:
+                        if self.optional:
+                            v = c.variable(src.name)
+                        else:
+                            v = c.variable(f'{src.name}.{field.name}')
+                        cf.append(field.enc_line(ret, dest, v))
+                    completed_fields.append(field)
+                    sw.append(cf)
+            if self.has_default:
+                for idx, temp in enumerate(completed_fields):
+                    if self.default_typ == temp:
+                        sw.insert(idx, c.defaultcase())
+                        break
+                else:
+                    df = c.defaultcase()
+                    if self.optional:
+                        v = c.variable(src.name)
+                    else:
+                        v = c.variable(f'{src.name}.{field.name}')
+                    df.append(self.default_typ.enc_line(ret, dest, v))
+                    sw.append(df)
+            return sw
+        first = True
+        sw = c.linesequence()
+        for caseval, field in self.map.items():
+            if not self.has_default and isinstance(field, void_type):
+                continue
+            if first:
+                cf = c.nospace_ifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swvar)
+                ), True))
+                first = False
+            else:
+                cf = c.elifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swvar)
+                ), True))
+            if isinstance(field, void_type):
+                cf.append(c.linecomment('void condition'))
+            else:
+                if self.optional:
+                    v = c.variable(src.name)
+                else:
+                    v = c.variable(f'{src.name}.{field.name}')
+                cf.append(field.enc_line(ret, dest, v))
+            sw.append(cf)
+        if self.has_default:
+            df = c.elsecond()
+            if self.optional:
+                v = c.variable(src.name)
+            else:
+                v = c.variable(f'{src.name}.{field.name}')
+            df.append(self.default_typ.enc_line(ret, dest, v))
+            sw.append(df)
+        return sw
 
     def dec_line(self, ret, dest, src):
         swvar = c.variable(get_switched_path(self.compare, dest.name, self))
@@ -846,7 +947,7 @@ class mc_switch(custom_type):
                         v = c.variable(dest.name)
                     else:
                         v = c.variable(f'{dest.name}.{field.name}')
-                    df.append(field.dec_line(ret, v, src))
+                    df.append(self.default_typ.dec_line(ret, v, src))
                     sw.append(df)
             return sw
         first = True
@@ -878,7 +979,7 @@ class mc_switch(custom_type):
                 v = c.variable(dest.name)
             else:
                 v = c.variable(f'{dest.name}.{field.name}')
-            df.append(field.dec_line(ret, v, src))
+            df.append(self.default_typ.dec_line(ret, v, src))
             sw.append(df)
         return sw
 
