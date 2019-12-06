@@ -1076,12 +1076,14 @@ class mc_bitfield(custom_type, numeric_type):
         self.fields = []
         self.mask_shift = []
         self.field_sizes = {}
-        for field in data:
-            shift = total
+        for idx, field in enumerate(data):
             total += field['size']
             if field['name'] in ('_unused', 'unused'):
                 continue
             self.field_sizes[field['name']] = field['size']
+            shift = 0
+            for temp in data[idx+1:]:
+                shift += temp['size']
             self.mask_shift.append(((1<<field['size'])-1, shift))
             numbits = (field['size'] + 7) & -8
             if field['signed']:
@@ -1104,7 +1106,15 @@ class mc_bitfield(custom_type, numeric_type):
         ))
 
     def enc_line(self, ret, dest, src):
-        return c.linecomment('mc_bitfield enc_line unimplemented')
+        seq = c.sequence()
+        seq.append(c.statement(self.storage.internal.decl))
+        for idx, field in enumerate(self.fields):
+            mask, shift = self.mask_shift[idx]
+            seq.append(c.statement(
+                f'{self.storage.name} |= ({src.name}.{field.name}&{mask})<<{shift}'
+            ))
+        seq.append(self.storage.enc_line(ret, dest, self.storage.internal))
+        return seq
 
     def dec_line(self, ret, dest, src):
         seq = c.sequence()
@@ -1121,7 +1131,7 @@ class mc_bitfield(custom_type, numeric_type):
         return seq
 
     def size_line(self, ret, field):
-        pass
+        return c.linecomment('mc_bitfield size_line unimplemented')
 
     # Only called if one or more fields are switched on
     def walk_line(self, ret, src, max_len, size):
@@ -1139,9 +1149,6 @@ class mc_bitfield(custom_type, numeric_type):
                 field.internal.decl, f'({self.storage.name}>>{shift})&{mask}'
             )))
         return seq
-
-    def free_line(self, field):
-        pass
 
 # ToDo: This needs to switch on particle type
 @mc_data_name('particleData')
