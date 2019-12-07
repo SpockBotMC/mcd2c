@@ -12,6 +12,7 @@ import cfile as c
 #   ! Division of concerns between cfile variables and mcd2c types is bad
 #     you can easily str()-ify cfile variables, but not mcd2c types
 #   ! Switched strings leak memory if a walk fails, need a goto failure mode
+#   ! Need a better mechanism for anonymous types
 
 mcd_typemap = {}
 def mc_data_name(typename):
@@ -141,7 +142,7 @@ class num_uuid(numeric_type):
 class complex_type(generic_type):
     def size_line(self, ret, field):
         return c.statement(
-            c.addeq(ret, c.fcall(f'size_{self.postfix}', (field,)))
+            c.addeq(ret, c.fcall(f'size_{self.postfix}', 'size_t', (field,)))
         )
 
     def walk_line(self, ret, src, max_len):
@@ -311,7 +312,14 @@ class mc_buffer(custom_type, memory_type):
         return seq
 
     def size_line(self, ret, field):
-        return c.linecomment('mc_buffer size_line unimplemented')
+        seq = c.sequence()
+        lenvar = c.variable(f'{field.name}.len')
+        if isinstance(self.ln, numeric_type):
+            seq.append(c.statement(c.addeq(ret, self.ln.size)))
+        else:
+            seq.append(self.ln.size_line(ret, lenvar))
+        seq.append(c.statement(c.addeq(ret, lenvar)))
+        return seq
 
     def free_line(self, field):
         return c.linecomment('mc_buffer free_line unimplemented')
@@ -494,7 +502,7 @@ def to_snake_case(name):
 # Read consecutive numeric types from a list of fields and return their
 # collective size and the position they're interrupted by a non-numeric type or
 # a numeric that acts as a switch, which will need to be decoded
-def group_numerics(fields, position):
+def group_numerics_walk(fields, position):
     total = 0
     for idx, field in enumerate(fields[position:]):
         if isinstance(field, mc_bitfield):
@@ -502,6 +510,15 @@ def group_numerics(fields, position):
                 return position + idx, total
             total += field.size
         elif isinstance(field, numeric_type) and not field.switched:
+            total += field.size
+        else:
+            return position + idx, total
+    return position + len(fields), total
+
+def group_numerics_size(fields, position):
+    total = 0
+    for idx, field in enumerate(fields[position:]):
+        if isinstance(field, numeric_type):
             total += field.size
         else:
             return position + idx, total
@@ -532,7 +549,7 @@ class mc_container(custom_type):
         if self.complex:
             self.size = None
         else:
-            _, self.size = group_numerics(self.fields, 0)
+            _, self.size = group_numerics_size(self.fields, 0)
 
     def __eq__(self, value):
         if not super().__eq__(value) or len(self.fields) != len(value.fields):
@@ -569,7 +586,7 @@ class mc_container(custom_type):
         position = 0
         endpos = len(self.fields)
         while(position < endpos):
-            position, total = group_numerics(self.fields, position)
+            position, total = group_numerics_walk(self.fields, position)
             if total:
                 seq.append(c.inlineif(
                     c.lth(max_len, total), c.returnval(-1)
@@ -1107,7 +1124,7 @@ class mc_bitfield(custom_type, numeric_type):
 
     def enc_line(self, ret, dest, src):
         seq = c.sequence()
-        seq.append(c.statement(self.storage.internal.decl))
+        seq.append(c.statement(c.assign(self.storage.internal.decl, 0)))
         for idx, field in enumerate(self.fields):
             mask, shift = self.mask_shift[idx]
             seq.append(c.statement(
@@ -1249,7 +1266,7 @@ class packet:
         src = c.variable('source', 'char *')
 
         if not self.complex:
-            position, total = group_numerics(self.fields, 0)
+            position, total = group_numerics_size(self.fields, 0)
             return c.linesequence((c.fdecl(
                 f'walk_{self.full_name}', 'int', (src.decl, max_len.decl)
             ), c.block((
@@ -1265,7 +1282,7 @@ class packet:
         position = 0
         endpos = len(self.fields)
         while(position < endpos):
-            position, total = group_numerics(self.fields, position)
+            position, total = group_numerics_walk(self.fields, position)
             if total:
                 blk.append(c.inlineif(
                     c.lth(max_len, total), c.returnval(-1)
@@ -1320,13 +1337,31 @@ class packet:
     def gen_sizefunc(self):
         pak = c.variabledecl('packet', self.full_name)
         if not self.complex:
-            position, total = group_numerics(self.fields, 0)
+            position, total = group_numerics_size(self.fields, 0)
             return c.linesequence((
                 c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)),
                 c.block((c.returnval(total),))
             ))
-        blk = c.block([c.linecomment('Complex sizefunc unimplemented')])
-        blk.append(c.returnval(0))
+        blk = c.block()
+        position = 0
+        sizevar = c.variable('size', 'size_t')
+        blk.append(c.statement(c.assign(sizevar.decl, 0)))
+        endpos = len(self.fields)
+        while(position < endpos):
+            position, total = group_numerics_size(self.fields, position)
+            if total:
+                if position < endpos:
+                    blk.append(c.statement(c.addeq(sizevar, total)))
+                else:
+                    blk.append(c.returnval(c.addop(sizevar, total)))
+            if position < endpos:
+                field = self.fields[position]
+                position += 1
+                v = c.variable(f'packet.{field.name}')
+                blk.append(field.size_line(sizevar, v))
+                if position == endpos:
+                    blk.append(c.returnval(sizevar))
+
         return c.linesequence((
             c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)), blk
         ))
