@@ -1163,12 +1163,12 @@ class mc_bitfield(custom_type, numeric_type):
 
 # ToDo: This needs to switch on particle type
 @mc_data_name('particleData')
-class mc_particledata(custom_type, memory_type):
+class mc_particledata(memory_type):
     typename = 'mc_particle'
     postfix = 'particledata'
 
     def __init__(self, name, data, parent):
-        super().__init__(name, data, parent)
+        super().__init__(name, parent)
         self.compare = data['compareTo']
         self.cp_short = to_snake_case(
             self.compare[self.compare.rfind('/') + 1:]
@@ -1181,17 +1181,11 @@ class mc_particledata(custom_type, memory_type):
             f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name, partvar)
         )))
 
-    def walk_line(self, ret, src, max_len, size, fail):
-        seq = c.sequence()
+    def walk_line(self, ret, src, max_len, fail):
         assign = c.wrap(c.assign(ret, c.fcall(
             f'walk_{self.postfix}', 'int', (src, max_len, self.cp_short)
         )))
-        seq.append(c.ifcond(c.lth(assign, 0), (fail,)))
-        seq.append(c.statement(c.addeq(size, ret)))
-        seq.append(c.statement(c.addeq(src, ret)))
-        seq.append(c.statement(c.subeq(max_len, ret)))
-        return seq
-
+        return c.ifcond(c.lth(assign, 0), (fail,))
 
 # ToDo: packets are containers with extra steps, we should stop duplicating
 # functionality and extract their common parts into a base class
