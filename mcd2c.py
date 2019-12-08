@@ -13,8 +13,6 @@ import copy
 #   ! cfile's fcall is a constant source of bugs because of the return type
 #     argument being where most cfile classes put their "elems" argument, and
 #     the "arguments" parameter being optional
-#   ! Division of concerns between cfile variables and mcd2c types is bad
-#     you can easily str()-ify cfile variables, but not mcd2c types
 #   ! Need a better mechanism for anonymous types
 
 mcd_typemap = {}
@@ -44,9 +42,9 @@ class generic_type:
         ))
 
     def dec_line(self, ret, dest, src):
-        return c.statement(c.assign(ret, c.fcall(
-            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
-        )))
+        return c.statement(c.assign(
+            ret, c.fcall(f'dec_{self.postfix}', 'char *', (f'&{dest}', src))
+        ))
 
     def __eq__(self, value):
         return self.typename == value.typename
@@ -59,6 +57,9 @@ class generic_type:
     def name(self, name):
         self.internal.name = name
         self._name = name
+
+    def __str__(self):
+        return str(self.internal)
 
 class numeric_type(generic_type):
     size = 0
@@ -172,19 +173,19 @@ class mc_varlong(complex_type):
 class memory_type(complex_type):
     def dec_line(self, ret, dest, src):
         assign = c.wrap(c.assign(ret, c.fcall(
-            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
+            f'dec_{self.postfix}', 'char *', (f'&{dest}', src)
         )), True)
         return c.inlineif(assign, c.returnval('NULL'))
 
     def walkdec_line(self, ret, dest, src, fail):
         assign = c.wrap(c.assign(ret, c.fcall(
-            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
+            f'dec_{self.postfix}', 'char *', (f'&{dest}', src)
         )), True)
         return c.ifcond(assign, (fail,))
 
     def free_line(self, field):
         return c.statement(
-            c.fcall(f'free_{self.postfix}', 'void', (field.name,))
+            c.fcall(f'free_{self.postfix}', 'void', (field,))
         )
 
 @mc_data_name('string')
@@ -262,7 +263,7 @@ class mc_buffer(custom_type, memory_type):
         self.children = [self.ln, self.base]
 
     def struct_line(self):
-        return c.linesequence((c.struct(elems = (
+        return c.linesequence((c.struct((
             self.ln.struct_line(),
             c.statement(self.base.decl)
         )), c.statement(self.name)))
@@ -293,9 +294,7 @@ class mc_buffer(custom_type, memory_type):
 
     def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
-        lenvar = c.variable(
-            f'{self.name}_len', self.ln.typename
-        )
+        lenvar = c.variable(f'{self.name}_len', self.ln.typename)
         if isinstance(self.ln, numeric_type):
             seq.append(c.ifcond(c.lth(max_len, self.ln.size), (fail,)))
             seq.append(c.statement(c.addeq(size, self.ln.size)))
@@ -314,7 +313,7 @@ class mc_buffer(custom_type, memory_type):
 
     def size_line(self, ret, field):
         seq = c.sequence()
-        lenvar = c.variable(f'{field.name}.len')
+        lenvar = c.variable(f'{field}.len')
         if isinstance(self.ln, numeric_type):
             seq.append(c.statement(c.addeq(ret, self.ln.size)))
         else:
@@ -377,7 +376,7 @@ class mc_array(custom_type, memory_type):
 
     def struct_line(self):
         if self.self_contained:
-            return c.linesequence((c.struct(elems = (
+            return c.linesequence((c.struct((
                 self.count.struct_line(),
                 self.base.struct_line()
             )), c.statement(self.name)))
@@ -387,12 +386,12 @@ class mc_array(custom_type, memory_type):
         seq = c.sequence()
         loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
         if self.self_contained:
-            basevar = c.variable(f'{src.name}.base')
-            countvar = c.variable(f'{src.name}.count')
+            basevar = c.variable(f'{src}.base')
+            countvar = c.variable(f'{src}.count')
             seq.append(self.count.enc_line(ret, dest, countvar))
         else:
             countvar = c.variable(get_switched_path(self.compare, src.name, self, False))
-            basevar = c.variable(f'{src.name}')
+            basevar = c.variable(f'{src}')
         basevar = c.variable(f'{basevar}[{loopvar}]')
         seq.append(c.forloop(
             c.assign(loopvar.decl, 0),
@@ -406,12 +405,12 @@ class mc_array(custom_type, memory_type):
         seq = c.sequence()
         loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
         if self.self_contained:
-            basevar = c.variable(f'{dest.name}.base')
-            countvar = c.variable(f'{dest.name}.count')
+            basevar = c.variable(f'{dest}.base')
+            countvar = c.variable(f'{dest}.count')
             seq.append(self.count.dec_line(ret, countvar, src))
         else:
             countvar = c.variable(get_switched_path(self.compare, dest.name, self))
-            basevar = c.variable(f'{dest.name}')
+            basevar = c.variable(f'{dest}')
         seq.append(c.inlineif(c.wrap(c.assign(basevar, c.fcall(
             'malloc', 'void *', (f'sizeof(*{basevar}) * {countvar}',)
         )), True), c.returnval('NULL')))
@@ -554,23 +553,22 @@ class mc_container(custom_type):
         return all([i == j for i, j in zip(self.fields, value.fields)])
 
     def struct_line(self):
-        struct_fields = [f.struct_line() for f in self.fields]
         return c.linesequence((
-            c.struct(elems = struct_fields),
+            c.struct([f.struct_line() for f in self.fields]),
             c.statement(self.name)
         ))
 
     def enc_line(self, ret, dest, src):
         seq = c.sequence()
         for field in self.fields:
-            v = c.variable(f'{src.name}.{field.name}', field.typename)
+            v = c.variable(f'{src}.{field}', field.typename)
             seq.append(field.enc_line(ret, dest, v))
         return seq
 
     def dec_line(self, ret, dest, src):
         seq = c.sequence()
         for field in self.fields:
-            v = c.variable(f'{dest.name}.{field.name}', field.typename)
+            v = c.variable(f'{dest}.{field}', field.typename)
             seq.append(field.dec_line(ret, v, src))
         return seq
 
@@ -637,24 +635,24 @@ class mc_option(custom_type):
         self.children.append(self.val)
 
     def struct_line(self):
-        return c.linesequence((c.struct(elems = (
+        return c.linesequence((c.struct((
             self.opt.struct_line(),
             self.val.struct_line()
         )), c.statement(self.name)))
 
     def enc_line(self, ret, dest, src):
         seq = c.sequence()
-        optvar = c.variable(f'{src.name}.opt')
+        optvar = c.variable(f'{src}.opt')
         seq.append(self.opt.enc_line(ret, dest, optvar))
-        valvar = c.variable(f'{src.name}.val', None)
+        valvar = c.variable(f'{src}.val', None)
         seq.append(c.ifcond(optvar, (self.val.enc_line(ret, dest, valvar),)))
         return seq
 
     def dec_line(self, ret, dest, src):
         seq = c.sequence()
-        optvar = c.variable(f'{dest.name}.opt')
+        optvar = c.variable(f'{dest}.opt')
         seq.append(self.opt.dec_line(ret, optvar, src))
-        valvar = c.variable(f'{dest.name}.val', None)
+        valvar = c.variable(f'{dest}.val', None)
         seq.append(c.ifcond(optvar, (self.val.dec_line(ret, valvar, src),)))
         return seq
 
@@ -832,7 +830,7 @@ class mc_switch(custom_type):
         if self.optional:
             return self.fields[0].struct_line()
         return c.linesequence((
-            c.union(elems = [f.struct_line() for f in self.fields]),
+            c.union([f.struct_line() for f in self.fields]),
             c.statement(self.name)
         ))
 
@@ -864,7 +862,7 @@ class mc_switch(custom_type):
                         if self.optional:
                             v = c.variable(src.name)
                         else:
-                            v = c.variable(f'{src.name}.{field.name}')
+                            v = c.variable(f'{src}.{field}')
                         cf.append(field.enc_line(ret, dest, v))
                     completed_fields.append(field)
                     sw.append(cf)
@@ -878,7 +876,7 @@ class mc_switch(custom_type):
                     if self.optional:
                         v = c.variable(src.name)
                     else:
-                        v = c.variable(f'{src.name}.{field.name}')
+                        v = c.variable(f'{src}.{field}')
                     df.append(self.default_typ.enc_line(ret, dest, v))
                     sw.append(df)
             return sw
@@ -902,7 +900,7 @@ class mc_switch(custom_type):
                 if self.optional:
                     v = c.variable(src.name)
                 else:
-                    v = c.variable(f'{src.name}.{field.name}')
+                    v = c.variable(f'{src}.{field}')
                 cf.append(field.enc_line(ret, dest, v))
             sw.append(cf)
         if self.has_default:
@@ -910,7 +908,7 @@ class mc_switch(custom_type):
             if self.optional:
                 v = c.variable(src.name)
             else:
-                v = c.variable(f'{src.name}.{field.name}')
+                v = c.variable(f'{src}.{field}')
             df.append(self.default_typ.enc_line(ret, dest, v))
             sw.append(df)
         return sw
@@ -943,7 +941,7 @@ class mc_switch(custom_type):
                         if self.optional:
                             v = c.variable(dest.name)
                         else:
-                            v = c.variable(f'{dest.name}.{field.name}')
+                            v = c.variable(f'{dest}.{field}')
                         cf.append(field.dec_line(ret, v, src))
                     completed_fields.append(field)
                     sw.append(cf)
@@ -957,7 +955,7 @@ class mc_switch(custom_type):
                     if self.optional:
                         v = c.variable(dest.name)
                     else:
-                        v = c.variable(f'{dest.name}.{field.name}')
+                        v = c.variable(f'{dest}.{field}')
                     df.append(self.default_typ.dec_line(ret, v, src))
                     sw.append(df)
             return sw
@@ -981,7 +979,7 @@ class mc_switch(custom_type):
                 if self.optional:
                     v = c.variable(dest.name)
                 else:
-                    v = c.variable(f'{dest.name}.{field.name}')
+                    v = c.variable(f'{dest}.{field}')
                 cf.append(field.dec_line(ret, v, src))
             sw.append(cf)
         if self.has_default:
@@ -989,11 +987,10 @@ class mc_switch(custom_type):
             if self.optional:
                 v = c.variable(dest.name)
             else:
-                v = c.variable(f'{dest.name}.{field.name}')
+                v = c.variable(f'{dest}.{field}')
             df.append(self.default_typ.dec_line(ret, v, src))
             sw.append(df)
         return sw
-
 
     def size_line(self, ret, field):
         return c.linecomment('mc_switch size_line unimplemented')
@@ -1110,9 +1107,8 @@ class mc_bitfield(custom_type, numeric_type):
         self.children = self.fields
 
     def struct_line(self):
-        struct_fields = [f.struct_line() for f in self.fields]
         return c.linesequence((
-            c.struct(elems = struct_fields),
+            c.struct([f.struct_line() for f in self.fields]),
             c.statement(self.name)
         ))
 
@@ -1122,7 +1118,7 @@ class mc_bitfield(custom_type, numeric_type):
         for idx, field in enumerate(self.fields):
             mask, shift = self.mask_shift[idx]
             seq.append(c.statement(
-                f'{self.storage.name} |= ({src.name}.{field.name}&{mask})<<{shift}'
+                f'{self.storage} |= ({src}.{field}&{mask})<<{shift}'
             ))
         seq.append(self.storage.enc_line(ret, dest, self.storage.internal))
         return seq
@@ -1136,8 +1132,8 @@ class mc_bitfield(custom_type, numeric_type):
             # I could wrap this in three more c.[func] calls or write one
             # little f-string, I go with f-string
             seq.append(c.statement(c.assign(
-                f'{dest.name}.{field.name}',
-                f'({self.storage.name}>>{shift})&{mask}'
+                f'{dest}.{field}',
+                f'({self.storage}>>{shift})&{mask}'
             )))
         return seq
 
@@ -1178,7 +1174,7 @@ class mc_particledata(memory_type):
     def dec_line(self, ret, dest, src):
         partvar = c.variable(get_switched_path(self.compare, dest.name, self))
         return c.statement(c.assign(ret, c.fcall(
-            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name, partvar)
+            f'dec_{self.postfix}', 'char *', (f'&{dest}', src.name, partvar)
         )))
 
     def walk_line(self, ret, src, max_len, fail):
@@ -1230,8 +1226,9 @@ class packet:
         return pckt
 
     def gen_struct(self):
-        struct_fields = [f.struct_line() for f in self.fields]
-        return c.typedef(c.struct(elems = struct_fields), self.full_name)
+        return c.typedef(c.struct(
+            [f.struct_line() for f in self.fields]
+        ), self.full_name)
 
     def gen_function_defs(self):
         src = c.variabledecl('*source', 'char')
@@ -1333,11 +1330,11 @@ class packet:
         ))
 
     def gen_sizefunc(self):
-        pak = c.variabledecl('packet', self.full_name)
+        pak = c.variable('packet', self.full_name)
         if not self.complex:
             position, total = group_numerics_size(self.fields, 0)
             return c.linesequence((
-                c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)),
+                c.fdecl(f'size_{self.full_name}', 'size_t', (pak.decl,)),
                 c.block((c.returnval(total),))
             ))
         blk = c.block()
@@ -1355,26 +1352,26 @@ class packet:
             if position < endpos:
                 field = self.fields[position]
                 position += 1
-                v = c.variable(f'packet.{field.name}')
+                v = c.variable(f'packet.{field}')
                 blk.append(field.size_line(sizevar, v))
                 if position == endpos:
                     blk.append(c.returnval(sizevar))
 
         return c.linesequence((
-            c.fdecl(f'size_{self.full_name}', 'size_t', (pak,)), blk
+            c.fdecl(f'size_{self.full_name}', 'size_t', (pak.decl,)), blk
         ))
 
     def gen_decfunc(self):
-        dest = c.variabledecl('packet', self.full_name)
-        destptr = c.variabledecl('*packet', self.full_name)
+        dest = c.variable('packet', self.full_name)
+        destptr = c.variable('*packet', self.full_name)
         src = c.variable('source', 'char *')
         blk = c.block()
         for field in self.fields:
-            v = c.variable(f'{dest.name}->{field.name}', field.typename)
+            v = c.variable(f'{dest}->{field}', field.typename)
             blk.append(field.dec_line(src, v, src))
         blk.append(c.returnval(src))
         return c.linesequence((c.fdecl(
-            f'dec_{self.full_name}', 'char *', (destptr, src.decl)
+            f'dec_{self.full_name}', 'char *', (destptr.decl, src.decl)
         ), blk))
 
     def gen_encfunc(self):
@@ -1382,7 +1379,7 @@ class packet:
         src = c.variable('source', self.full_name)
         blk = c.block()
         for field in self.fields:
-            v = c.variable(f'{src.name}.{field.name}', field.typename)
+            v = c.variable(f'{src}.{field}', field.typename)
             blk.append(field.enc_line(dest, dest, v))
         blk.append(c.returnval(dest))
         return c.linesequence((c.fdecl(
