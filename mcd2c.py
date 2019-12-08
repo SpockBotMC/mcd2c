@@ -183,9 +183,9 @@ class memory_type(complex_type):
         )), True)
         return c.ifcond(assign, (fail,))
 
-    def free_line(self, field):
+    def free_line(self, src):
         return c.statement(
-            c.fcall(f'free_{self.postfix}', 'void', (field,))
+            c.fcall(f'free_{self.postfix}', 'void', (src,))
         )
 
 @mc_data_name('string')
@@ -321,8 +321,8 @@ class mc_buffer(custom_type, memory_type):
         seq.append(c.statement(c.addeq(size, lenvar)))
         return seq
 
-    def free_line(self, field):
-        return c.linecomment('mc_buffer free_line unimplemented')
+    def free_line(self, src):
+        return c.statement(c.fcall('free', 'void', (f'{src}.base',)))
 
 @mc_data_name('restBuffer')
 class mc_restbuffer(memory_type):
@@ -338,7 +338,7 @@ class mc_restbuffer(memory_type):
     def walk_line(self, ret, src, max_len, fail):
         return c.linecomment('mc_restbuffer walk_line unimplemented')
 
-    def free_line(self, field):
+    def free_line(self, src):
         return c.linecomment('mc_restbuffer free_line unimplemented')
 
 @mc_data_name('array')
@@ -507,8 +507,8 @@ class mc_array(custom_type, memory_type):
 
         return seq
 
-    def free_line(self, field):
-        pass
+    def free_line(self, src):
+        return c.linecomment('mc_array free_line unimplemented')
 
 import re
 
@@ -660,8 +660,8 @@ class mc_container(custom_type):
             seq.append(field.free_line(field))
         return seq
 
-    def free_line(self, field):
-        pass
+    def free_line(self, src):
+        return c.linecomment('mc_container free_line unimplemented')
 
 @mc_data_name('option')
 class mc_option(custom_type):
@@ -732,8 +732,8 @@ class mc_option(custom_type):
             ifseq.append(c.statement(c.subeq(max_len, ret)))
         return seq
 
-    def free_line(self, field):
-        pass
+    def free_line(self, src):
+        return c.linecomment('mc_option free_line unimplemented')
 
 def search_down(name, field):
     for child in field.children:
@@ -1189,10 +1189,13 @@ class mc_switch(custom_type):
             sw.append(df)
         return sw
 
-    def free_line(self, field):
-        pass
+    def free_line(self, src):
+        return c.linecomment('mc_switch free_line unimplemented')
 
 
+# bitfield is a custom_type instead of complex only because it needs to fully
+# handle itself for walk funcs when it contains a switched fields. Consider
+# changing to complex_type if we ever improve how walk funcs are built
 @mc_data_name('bitfield')
 class mc_bitfield(custom_type, numeric_type):
     def __init__(self, name, data, parent):
@@ -1482,7 +1485,6 @@ class packet:
                 blk.append(field.size_line(sizevar, v))
                 if position == endpos:
                     blk.append(c.returnval(sizevar))
-
         return c.linesequence((
             c.fdecl(f'size_{self.full_name}', 'size_t', (pak.decl,)), blk
         ))
@@ -1513,7 +1515,18 @@ class packet:
         ), blk))
 
     def gen_freefunc(self):
-        pass
+        pak = c.variable('packet', self.full_name)
+        blk = c.block()
+        for field in self.fields:
+            if isinstance(field, memory_type) or (
+                hasattr(field, 'children') and
+                check_instance(field.children, memory_type)
+            ):
+                v = c.variable(f'packet.{field}')
+                blk.append(field.free_line(v))
+        return c.linesequence((
+            c.fdecl(f'free_{self.full_name}', 'void', (pak.decl,)), blk
+        ))
 
 
 import minecraft_data
@@ -1575,7 +1588,7 @@ def run(version):
     hdr.append(gen_enums(enums))
 
     for p in packets:
-        if(p.fields):
+        if p.fields:
             hdr.append(c.blank())
             hdr.append(p.gen_struct())
             hdr.append(c.blank())
@@ -1589,6 +1602,9 @@ def run(version):
             impl.append(p.gen_decfunc())
             impl.append(c.blank())
             impl.append(p.gen_encfunc())
+            if p.need_free:
+                impl.append(c.blank())
+                impl.append(p.gen_freefunc())
 
     fp = open(hdr.path, 'w+')
     fp.write(str(hdr))
