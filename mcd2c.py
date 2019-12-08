@@ -3,6 +3,7 @@
 # For the straight-forward pathway had been lost.
 
 import cfile as c
+import copy
 
 # General ToDo:
 #   ! cfile needs better pointer support
@@ -11,7 +12,6 @@ import cfile as c
 #     the "arguments" parameter being optional
 #   ! Division of concerns between cfile variables and mcd2c types is bad
 #     you can easily str()-ify cfile variables, but not mcd2c types
-#   ! Switched strings leak memory if a walk fails, need a goto failure mode
 #   ! Need a better mechanism for anonymous types
 
 mcd_typemap = {}
@@ -145,11 +145,11 @@ class complex_type(generic_type):
             c.addeq(ret, c.fcall(f'size_{self.postfix}', 'size_t', (field,)))
         )
 
-    def walk_line(self, ret, src, max_len):
+    def walk_line(self, ret, src, max_len, fail):
         assign = c.wrap(c.assign(
             ret, c.fcall(f'walk_{self.postfix}', 'int', (src, max_len))
         ))
-        return c.inlineif(c.lth(assign, 0), c.returnval(-1))
+        return c.ifcond(c.lth(assign, 0), (fail,))
 
 @mc_data_name('varint')
 class mc_varint(complex_type):
@@ -173,11 +173,11 @@ class memory_type(complex_type):
         )), True)
         return c.inlineif(assign, c.returnval('NULL'))
 
-    def walkdec_line(self, ret, dest, src):
+    def walkdec_line(self, ret, dest, src, fail):
         assign = c.wrap(c.assign(ret, c.fcall(
             f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name)
         )), True)
-        return c.inlineif(assign, c.returnval(-1))
+        return c.ifcond(assign, (fail,))
 
     def free_line(self, field):
         return c.statement(
@@ -288,24 +288,22 @@ class mc_buffer(custom_type, memory_type):
         seq.append(c.statement(c.addeq(src, lenvar)))
         return seq
 
-    def walk_line(self, ret, src, max_len, size):
+    def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
         lenvar = c.variable(
             f'{self.name}_len', self.ln.typename
         )
         if isinstance(self.ln, numeric_type):
-            seq.append(c.inlineif(
-                c.lth(max_len, self.ln.size), c.returnval(-1))
-            )
+            seq.append(c.ifcond(c.lth(max_len, self.ln.size), (fail,)))
             seq.append(c.statement(c.addeq(size, self.ln.size)))
             seq.append(c.statement(c.subeq(max_len, self.ln.size)))
         else:
-            seq.append(self.ln.walk_line(ret, src, max_len))
+            seq.append(self.ln.walk_line(ret, src, max_len, fail))
             seq.append(c.statement(c.addeq(size, ret)))
             seq.append(c.statement(c.subeq(max_len, ret)))
         seq.append(c.statement(lenvar.decl))
         seq.append(self.ln.dec_line(src, lenvar, src))
-        seq.append(c.inlineif(c.lth(max_len, lenvar), c.returnval(-1)))
+        seq.append(c.ifcond(c.lth(max_len, lenvar), (fail,)))
         seq.append(c.statement(c.addeq(size, lenvar)))
         seq.append(c.statement(c.addeq(src, lenvar)))
         seq.append(c.statement(c.subeq(max_len, lenvar)))
@@ -335,7 +333,7 @@ class mc_restbuffer(memory_type):
     def size_line(self, ret, field):
         return c.linecomment('mc_restbuffer size_line unimplemented')
 
-    def walk_line(self, ret, src, max_len):
+    def walk_line(self, ret, src, max_len, fail):
         return c.linecomment('mc_restbuffer walk_line unimplemented')
 
     def free_line(self, field):
@@ -426,12 +424,10 @@ class mc_array(custom_type, memory_type):
     def size_line(self, ret, field):
         return c.linecomment('mc_array size_line unimplemented')
 
-    def walk_line(self, ret, src, max_len, size):
+    def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
         if self.self_contained:
-            count_var = c.variable(
-                f'{self.name}_count', self.count.typename
-            )
+            count_var = c.variable(f'{self.name}_count', self.count.typename)
             # Hack for arrays containing arrays
             if self.name == '*base':
                 depth = 0
@@ -441,13 +437,11 @@ class mc_array(custom_type, memory_type):
                     parent = self.parent
                 count_var.name = f'{self.parent.name}{depth}_count'
             if isinstance(self.count, numeric_type):
-                seq.append(c.inlineif(
-                    c.lth(max_len, self.count.size), c.returnval(-1))
-                )
+                seq.append(c.ifcond(c.lth(max_len, self.count.size), (fail,)))
                 seq.append(c.statement(c.addeq(size, self.count.size)))
                 seq.append(c.statement(c.subeq(max_len, self.count.size)))
             else:
-                seq.append(self.count.walk_line(ret, src, max_len))
+                seq.append(self.count.walk_line(ret, src, max_len, fail))
                 seq.append(c.statement(c.addeq(size, ret)))
                 seq.append(c.statement(c.subeq(max_len, ret)))
             seq.append(c.statement(count_var.decl))
@@ -455,9 +449,9 @@ class mc_array(custom_type, memory_type):
         else:
             count_var = self.external_count.internal
         if hasattr(self.base, 'size') and not self.base.size is None:
-            seq.append(c.inlineif(
+            seq.append(c.ifcond(
                 c.lth(max_len, c.mulop(count_var, self.base.size)),
-                c.returnval(-1)
+                (fail,)
             ))
             seq.append(c.statement(c.addeq(
                 size, c.mulop(count_var, self.base.size)
@@ -472,9 +466,9 @@ class mc_array(custom_type, memory_type):
             depth = get_depth(self)
             loopvar = c.variable(f'i_{depth}', 'size_t')
             if isinstance(self.base, custom_type):
-                forelems = [self.base.walk_line(ret, src, max_len, size)]
+                forelems = [self.base.walk_line(ret, src, max_len, size, fail)]
             else:
-                forelems = [self.base.walk_line(ret, src, max_len)]
+                forelems = [self.base.walk_line(ret, src, max_len, fail)]
                 forelems.append(c.statement(c.addeq(size, ret)))
                 forelems.append(c.statement(c.addeq(src, ret)))
                 forelems.append(c.statement(c.subeq(max_len, ret)))
@@ -580,7 +574,7 @@ class mc_container(custom_type):
     def size_line(self, ret, field):
         return c.linecomment('mc_container size_line unimplemented')
 
-    def walk_line(self, ret, src, max_len, size):
+    def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
         to_free = []
         position = 0
@@ -588,13 +582,12 @@ class mc_container(custom_type):
         while(position < endpos):
             position, total = group_numerics_walk(self.fields, position)
             if total:
-                seq.append(c.inlineif(
-                    c.lth(max_len, total), c.returnval(-1)
-                ))
+                seq.append(c.ifcond(c.lth(max_len, total), (fail,)))
                 seq.append(c.statement(c.addeq(size, total)))
                 seq.append(c.statement(c.addeq(src, total)))
                 seq.append(c.statement(c.subeq(max_len, total)))
             if position < endpos:
+                fail = copy.deepcopy(fail)
                 field = self.fields[position]
                 position += 1
                 if field.switched:
@@ -602,24 +595,24 @@ class mc_container(custom_type):
                     # of this madness
                     seq.append(c.statement(field.internal.decl))
                     if isinstance(field, numeric_type):
-                        seq.append(c.inlineif(
-                            c.lth(max_len, field.size), c.returnval(-1)
-                        ))
+                        seq.append(c.ifcond(c.lth(max_len, field.size), (fail,)))
                         seq.append(c.statement(c.addeq(size, field.size)))
                         seq.append(c.statement(c.subeq(max_len, field.size)))
                     else:
-                        seq.append(field.walk_line(ret, src, max_len))
+                        seq.append(field.walk_line(ret, src, max_len, fail))
                         seq.append(c.statement(c.addeq(size, ret)))
                         seq.append(c.statement(c.subeq(max_len, ret)))
                     if isinstance(field, memory_type):
-                        seq.append(field.walkdec_line(src, field, src))
+                        seq.append(field.walkdec_line(src, field, src, fail))
                         to_free.append(field)
+                        fail = copy.deepcopy(fail)
+                        fail.insert(0, field.free_line(field))
                     else:
                         seq.append(field.dec_line(src, field, src))
                 elif isinstance(field, custom_type):
-                    seq.append(field.walk_line(ret, src, max_len, size))
+                    seq.append(field.walk_line(ret, src, max_len, size, fail))
                 else:
-                    seq.append(field.walk_line(ret, src, max_len))
+                    seq.append(field.walk_line(ret, src, max_len, fail))
                     seq.append(c.statement(c.addeq(size, ret)))
                     seq.append(c.statement(c.addeq(src, ret)))
                     seq.append(c.statement(c.subeq(max_len, ret)))
@@ -665,32 +658,28 @@ class mc_option(custom_type):
     def size_line(self, ret, field):
         return c.linecomment('mc_option size_line unimplemented')
 
-    def walk_line(self, ret, src, max_len, size):
+    def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
-        seq.append(c.inlineif(
-            c.lth(max_len, self.opt.size), c.returnval(-1)
-        ))
+        seq.append(c.ifcond(c.lth(max_len, self.opt.size), (fail,)))
         optvar = c.variable(f'{self.name}_opt', self.opt.typename)
         seq.append(c.statement(optvar.decl))
         seq.append(self.opt.dec_line(src, optvar, src))
         seq.append(c.statement(c.addeq(size, self.opt.size)))
         seq.append(c.statement(c.subeq(max_len, self.opt.size)))
-        ifelems = []
+        ifseq = c.ifcond(optvar)
+        seq.append(ifseq)
         if isinstance(self.val, custom_type):
-            ifelems.append(self.val.walk_line(ret, src, max_len, size))
+            ifseq.append(self.val.walk_line(ret, src, max_len, size, fail))
         elif isinstance(self.val, numeric_type):
-            ifelems.append(c.inlineif(
-                c.lth(max_len, self.val.size), c.returnval(-1)
-            ))
-            ifelems.append(c.statement(c.addeq(size, self.val.size)))
-            ifelems.append(c.statement(c.addeq(src, self.val.size)))
-            ifelems.append(c.statement(c.subeq(max_len, self.val.size)))
+            ifseq.append(c.ifcond(c.lth(max_len, self.val.size), (fail,)))
+            ifseq.append(c.statement(c.addeq(size, self.val.size)))
+            ifseq.append(c.statement(c.addeq(src, self.val.size)))
+            ifseq.append(c.statement(c.subeq(max_len, self.val.size)))
         else:
-            ifelems = [self.val.walk_line(ret, src, max_len)]
-            ifelems.append(c.statement(c.addeq(size, ret)))
-            ifelems.append(c.statement(c.addeq(src, ret)))
-            ifelems.append(c.statement(c.subeq(max_len, ret)))
-        seq.append(c.ifcond(optvar, ifelems))
+            ifseq = [self.val.walk_line(ret, src, max_len, fail)]
+            ifseq.append(c.statement(c.addeq(size, ret)))
+            ifseq.append(c.statement(c.addeq(src, ret)))
+            ifseq.append(c.statement(c.subeq(max_len, ret)))
         return seq
 
     def free_line(self, field):
@@ -720,16 +709,18 @@ def search_fields(name, parent):
         else:
             return None
 
-def generic_walk_func(app, field, ret, src, max_len, size):
+# ToDo: Is this not checking max_len against size for numeric types?
+def generic_walk_func(app, field, ret, src, max_len, size, fail):
     if isinstance(field, numeric_type):
         app.append(c.statement(c.addeq(size, field.size)))
         app.append(c.statement(c.addeq(src, field.size)))
         app.append(c.statement(c.subeq(max_len, field.size)))
     else:
         if isinstance(field, custom_type):
-            app.append(field.walk_line(ret, src, max_len, size))
+            fail = copy.deepcopy(fail)
+            app.append(field.walk_line(ret, src, max_len, size, fail))
         else:
-            app.append(field.walk_line(ret, src, max_len))
+            app.append(field.walk_line(ret, src, max_len, fail))
             app.append(c.statement(c.addeq(size, ret)))
             app.append(c.statement(c.addeq(src, ret)))
             app.append(c.statement(c.subeq(max_len, ret)))
@@ -1004,10 +995,10 @@ class mc_switch(custom_type):
     def size_line(self, ret, field):
         return c.linecomment('mc_switch size_line unimplemented')
 
-    def walk_line(self, ret, src, max_len, size):
+    def walk_line(self, ret, src, max_len, size, fail):
         if not self.string_switch and self.isbool and self.optional:
             elems = []
-            generic_walk_func(elems, self.fields[0], ret, src, max_len, size)
+            generic_walk_func(elems, self.fields[0], ret, src, max_len, size, fail)
             if self.optional_case:
                 return c.ifcond(self.cp_short, elems)
             else:
@@ -1027,7 +1018,7 @@ class mc_switch(custom_type):
                     if isinstance(field, void_type):
                         cf.append(c.linecomment('void condition'))
                     else:
-                        generic_walk_func(cf, field, ret, src, max_len, size)
+                        generic_walk_func(cf, field, ret, src, max_len, size, fail)
                     completed_fields.append(field)
                     sw.append(cf)
             if self.has_default:
@@ -1038,7 +1029,7 @@ class mc_switch(custom_type):
                 else:
                     df = c.defaultcase()
                     generic_walk_func(
-                        df, self.default_typ, ret, src, max_len, size
+                        df, self.default_typ, ret, src, max_len, size, fail
                     )
                     sw.append(df)
             return sw
@@ -1059,12 +1050,12 @@ class mc_switch(custom_type):
             if isinstance(field, void_type):
                 cf.append(c.linecomment('void condition'))
             else:
-                generic_walk_func(cf, field, ret, src, max_len, size)
+                generic_walk_func(cf, field, ret, src, max_len, size, fail)
             sw.append(cf)
         if self.has_default:
             df = c.elsecond()
             generic_walk_func(
-                df, self.default_typ, ret, src, max_len, size
+                df, self.default_typ, ret, src, max_len, size, fail
             )
             sw.append(df)
         return sw
@@ -1151,9 +1142,9 @@ class mc_bitfield(custom_type, numeric_type):
         return c.linecomment('mc_bitfield size_line unimplemented')
 
     # Only called if one or more fields are switched on
-    def walk_line(self, ret, src, max_len, size):
+    def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
-        seq.append(c.inlineif(c.lth(max_len, self.size), c.returnval(-1)))
+        seq.append(c.ifcond(c.lth(max_len, self.size), (fail,)))
         seq.append(c.statement(self.storage.internal.decl))
         seq.append(c.statement(c.addeq(size, self.size)))
         seq.append(c.statement(c.subeq(max_len, self.size)))
@@ -1179,7 +1170,7 @@ class mc_particledata(custom_type, memory_type):
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_particledata dec_line unimplemented')
 
-    def walk_line(self, ret, src, max_len, size):
+    def walk_line(self, ret, src, max_len, size, fail):
         return c.linecomment('mc_particledata walk_line unimplemented')
 
     def size_line(self, ret, field):
@@ -1277,16 +1268,16 @@ class packet:
         ret = c.variable('ret', 'int')
         size = c.variable('size', 'int')
         #cfile lacks the capability to group variables declarations
-        blk = c.block(elems=[c.statement(f'{ret.decl}, {c.assign(size, 0)}')])
+        blk = c.block([c.statement(f'{ret.decl}, {c.assign(size, 0)}')])
         to_free = []
+        fail = c.sequence([c.returnval(-1)])
         position = 0
         endpos = len(self.fields)
         while(position < endpos):
+            fail = copy.deepcopy(fail)
             position, total = group_numerics_walk(self.fields, position)
             if total:
-                blk.append(c.inlineif(
-                    c.lth(max_len, total), c.returnval(-1)
-                ))
+                blk.append(c.ifcond(c.lth(max_len, total), (fail,)))
                 if position < endpos:
                     blk.append(c.statement(c.addeq(size, total)))
                     blk.append(c.statement(c.addeq(src, total)))
@@ -1300,26 +1291,26 @@ class packet:
                 if field.switched:
                     blk.append(c.statement(field.internal.decl))
                     if isinstance(field, numeric_type):
-                        blk.append(c.inlineif(
-                            c.lth(max_len, field.size), c.returnval(-1)
-                        ))
+                        blk.append(c.ifcond(c.lth(max_len, field.size), (fail,)))
                         blk.append(c.statement(c.addeq(size, field.size)))
                         blk.append(c.statement(c.subeq(max_len, field.size)))
                     else:
-                        blk.append(field.walk_line(ret, src, max_len))
+                        blk.append(field.walk_line(ret, src, max_len, fail))
                         blk.append(c.statement(c.addeq(size, ret)))
                         blk.append(c.statement(c.subeq(max_len, ret)))
                     if isinstance(field, memory_type):
-                        blk.append(field.walkdec_line(src, field, src))
+                        blk.append(field.walkdec_line(src, field, src, fail))
+                        fail = copy.deepcopy(fail)
+                        fail.insert(0, field.free_line(field))
                         to_free.append(field)
                     else:
                         blk.append(field.dec_line(src, field, src))
                 elif isinstance(field, custom_type):
-                    blk.append(field.walk_line(ret, src, max_len, size))
+                    blk.append(field.walk_line(ret, src, max_len, size, fail))
                     if position >= endpos:
                         blk.append(c.returnval(size))
                 else:
-                    blk.append(field.walk_line(ret, src, max_len))
+                    blk.append(field.walk_line(ret, src, max_len, fail))
                     if position >= endpos:
                         blk.append(c.returnval(c.addop(size, ret)))
                     else:
