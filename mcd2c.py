@@ -508,7 +508,30 @@ class mc_array(custom_type, memory_type):
         return seq
 
     def free_line(self, src):
-        return c.linecomment('mc_array free_line unimplemented')
+        seq = c.sequence()
+        if self.self_contained:
+            basevar = c.variable(f'{src}.base')
+            countvar = c.variable(f'{src}.count')
+        else:
+            countvar = c.variable(get_switched_path(
+                self.compare, src.name, self, False
+            ))
+            basevar = c.variable(f'{src}')
+        final = c.statement(c.fcall('free', 'void', (basevar,)))
+        if isinstance(self.base, memory_type) or (
+            hasattr(self.base, 'children') and
+            check_instance(self.base.children, memory_type)
+        ):
+            loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
+            basevar = c.variable(f'{basevar}[{loopvar}]')
+            seq.append(c.forloop(
+                c.assign(loopvar.decl, 0),
+                c.lth(loopvar, countvar),
+                c.incop(loopvar),
+                (self.base.free_line(basevar),)
+            ))
+        seq.append(final)
+        return seq
 
 import re
 
@@ -661,7 +684,15 @@ class mc_container(custom_type):
         return seq
 
     def free_line(self, src):
-        return c.linecomment('mc_container free_line unimplemented')
+        seq = c.sequence()
+        for field in self.fields:
+            if isinstance(field, memory_type) or (
+                hasattr(field, 'children') and
+                check_instance(field.children, memory_type)
+            ):
+                v = c.variable(f'{src}.{field}')
+                seq.append(field.free_line(v))
+        return seq
 
 @mc_data_name('option')
 class mc_option(custom_type):
@@ -732,8 +763,12 @@ class mc_option(custom_type):
             ifseq.append(c.statement(c.subeq(max_len, ret)))
         return seq
 
+    # Option isn't a memory type, so if free_line is called we know that val is
+    # or contains one
     def free_line(self, src):
-        return c.linecomment('mc_option free_line unimplemented')
+        optvar = c.variable(f'{src}.opt')
+        valvar = c.variable(f'{src}.val')
+        return c.ifcond(optvar, (self.val.free_line(valvar),))
 
 def search_down(name, field):
     for child in field.children:
