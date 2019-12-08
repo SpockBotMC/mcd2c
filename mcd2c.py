@@ -1123,7 +1123,7 @@ class mc_switch(custom_type):
                         v = c.variable(src.name)
                     else:
                         v = c.variable(f'{src}.{self.default_typ}')
-                    generic_size_func(df, field, size, v)
+                    generic_size_func(df, self.default_typ, size, v)
                     sw.append(df)
             return sw
         first = True
@@ -1155,7 +1155,7 @@ class mc_switch(custom_type):
                 v = c.variable(src.name)
             else:
                 v = c.variable(f'{src}.{self.default_typ}')
-            generic_size_func(df, field, size, v)
+            generic_size_func(df, self.default_typ, size, v)
             sw.append(df)
         return sw
 
@@ -1225,7 +1225,102 @@ class mc_switch(custom_type):
         return sw
 
     def free_line(self, src):
-        return c.linecomment('mc_switch free_line unimplemented')
+        swpath = get_switched_path(self.compare, src.name, self, False)
+        # Switch is not a memory type, so if its optional and getting a
+        # free_line call, then that type is a memory type or contains one
+        if self.isbool and self.optional:
+            if self.optional_case:
+                return c.ifcond(swpath, (self.fields[0].free_line(src),))
+            else:
+                return c.ifcond(c.wrap(swpath, True), (
+                    self.fields[0].free_line(src),
+                ))
+
+        if not self.string_switch:
+            sw = c.switch(swpath)
+            completed_fields = []
+            for caseval, field in self.map.items():
+                for idx, temp in enumerate(completed_fields):
+                    if field == temp:
+                        sw.insert(idx, c.case(caseval, fall=True))
+                        completed_fields.insert(idx, field)
+                        break
+                else:
+                    cf = c.case(caseval)
+                    if isinstance(field, memory_type) or (
+                        hasattr(field, 'children') and
+                        check_instance(field.children, memory_type)
+                    ):
+                        if self.optional:
+                            v = c.variable(src.name)
+                        else:
+                            v = c.variable(f'{src}.{field}')
+                        cf.append(field.free_line(v))
+                    else:
+                        cf.append(c.linecomment('No free-able types'))
+                    completed_fields.append(field)
+                    sw.append(cf)
+            if self.has_default:
+                for idx, temp in enumerate(completed_fields):
+                    if self.default_typ == temp:
+                        sw.insert(idx, c.defaultcase())
+                        break
+                else:
+                    df = c.defaultcase()
+                    if isinstance(self.default_typ, memory_type) or (
+                        hasattr(self.default_typ, 'children') and
+                        check_instance(self.default_typ.children, memory_type)
+                    ):
+                        if self.optional:
+                            v = c.variable(src.name)
+                        else:
+                            v = c.variable(f'{src}.{self.default_typ}')
+                        df.append(self.default_typ.free_line(v))
+                    else:
+                        df.append(c.linecomment('No free-able types'))
+                    sw.append(df)
+            return sw
+        first = True
+        sw = c.linesequence()
+        for caseval, field in self.map.items():
+            if not self.has_default and isinstance(field, void_type):
+                continue
+            if first:
+                cf = c.nospace_ifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swpath)
+                ), True))
+                first = False
+            else:
+                cf = c.elifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swpath)
+                ), True))
+            if isinstance(field, memory_type) or (
+                hasattr(field, 'children') and
+                check_instance(field.children, memory_type)
+            ):
+                if self.optional:
+                    v = c.variable(src.name)
+                else:
+                    v = c.variable(f'{src}.{field}')
+                cf.append(field.free_line(v))
+            else:
+                cf.append(c.linecomment('No free-able types'))
+            sw.append(cf)
+        if self.has_default:
+            df = c.elsecond()
+            if isinstance(self.default_typ, memory_type) or (
+                hasattr(self.default_typ, 'children') and
+                check_instance(self.default_typ.children, memory_type)
+            ):
+                if self.optional:
+                    v = c.variable(src.name)
+                else:
+                    v = c.variable(f'{src}.{self.default_typ}')
+                df.append(self.default_typ.free_line(v))
+            else:
+                df.append(c.linecomment('No free-able types'))
+            sw.append(df)
+        return sw
 
 
 # bitfield is a custom_type instead of complex only because it needs to fully
