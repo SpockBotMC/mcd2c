@@ -1479,7 +1479,7 @@ class packet:
                 fname = to_snake_case(field['name'])
             except KeyError as err:
                 fname = 'anonymous'
-                print(f'Anonymous field in: {full_name}')
+                #print(f'Anonymous field in: {full_name}')
             pckt.append(get_type(field['type'], fname, pckt))
         # ToDo: This is a stupid hack, should be replaced my instantiating
         # fields in init by passing something like (typ, fname) tuples instead
@@ -1760,4 +1760,7 @@ def run(version):
     fp.close()
 
 if __name__ == '__main__':
-    run('1.14.4')
+    import sys
+    version = sys.argv[1]
+    print('Generating version', version)
+    run(version)
