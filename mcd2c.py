@@ -329,17 +329,20 @@ class mc_restbuffer(memory_type):
     typename = 'mc_buffer'
     postfix = 'buffer'
 
-    def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_restbuffer dec_line unimplemented')
+    def dec_line(self, ret, dest, src, endptr):
+        return c.statement(c.assign(
+            ret, c.fcall(f'dec_{self.postfix}', 'char *',
+            (f'&{dest}', src, c.subop(endptr, ret)))
+        ))
 
     def size_line(self, size, src):
-        return c.linecomment('mc_restbuffer size_line unimplemented')
+        return c.statement(c.addeq(size, f'{src}.len'))
 
     def walk_line(self, ret, src, max_len, fail):
-        return c.linecomment('mc_restbuffer walk_line unimplemented')
+        return c.statement(c.assign(ret, max_len))
 
     def free_line(self, src):
-        return c.linecomment('mc_restbuffer free_line unimplemented')
+        return c.statement(c.fcall('free', 'void', (f'{src}.base',)))
 
 @mc_data_name('array')
 class mc_array(custom_type, memory_type):
@@ -1416,7 +1419,6 @@ class mc_bitfield(custom_type, numeric_type):
             )))
         return seq
 
-# ToDo: This needs to switch on particle type
 @mc_data_name('particleData')
 class mc_particledata(memory_type):
     typename = 'mc_particle'
@@ -1496,7 +1498,11 @@ class packet:
         max_len = c.variabledecl('max_len', 'size_t')
         pak_src = c.variabledecl('source', self.full_name)
         pak_dest = c.variabledecl('*dest', self.full_name)
-
+        totalsize = c.variabledecl('total_size', 'size_t')
+        if check_instance(self.fields, mc_restbuffer):
+            decargs = (pak_dest, src, totalsize)
+        else:
+            decargs = (pak_dest, src)
         s = c.sequence([
             c.statement(c.fdecl(
                 f'walk_{self.full_name}', 'int', (src, max_len)
@@ -1505,9 +1511,7 @@ class packet:
             c.statement(c.fdecl(
                 f'enc_{self.full_name}', 'char *', (dest, pak_src)
             )),
-            c.statement(c.fdecl(
-                f'dec_{self.full_name}', 'char *', (pak_dest, src)
-            )),
+            c.statement(c.fdecl(f'dec_{self.full_name}', 'char *', decargs)),
         ])
         if self.need_free:
             s.append(c.statement(
@@ -1624,12 +1628,24 @@ class packet:
         destptr = c.variable('*packet', self.full_name)
         src = c.variable('source', 'char *')
         blk = c.block()
+        if check_instance(self.fields, mc_restbuffer):
+            totalsize = c.variable('total_size', 'size_t')
+            endptr = c.variable('endptr', 'char *')
+            blk.append(c.statement(c.assign(
+                endptr.decl, c.addop(src, totalsize)
+            )))
+            args = (destptr.decl, src.decl, totalsize.decl)
+        else:
+            args = (destptr.decl, src.decl)
         for field in self.fields:
             v = c.variable(f'{dest}->{field}', field.typename)
-            blk.append(field.dec_line(src, v, src))
+            if isinstance(field, mc_restbuffer):
+                blk.append(field.dec_line(src, v, src, endptr))
+            else:
+                blk.append(field.dec_line(src, v, src))
         blk.append(c.returnval(src))
         return c.linesequence((c.fdecl(
-            f'dec_{self.full_name}', 'char *', (destptr.decl, src.decl)
+            f'dec_{self.full_name}', 'char *', args
         ), blk))
 
     def gen_encfunc(self):
