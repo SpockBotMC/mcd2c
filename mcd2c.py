@@ -144,9 +144,9 @@ class num_uuid(numeric_type):
     postfix = 'uuid'
 
 class complex_type(generic_type):
-    def size_line(self, ret, field):
+    def size_line(self, size, src):
         return c.statement(
-            c.addeq(ret, c.fcall(f'size_{self.postfix}', 'size_t', (field,)))
+            c.addeq(size, c.fcall(f'size_{self.postfix}', 'size_t', (src,)))
         )
 
     def walk_line(self, ret, src, max_len, fail):
@@ -263,7 +263,7 @@ class mc_buffer(custom_type, memory_type):
         self.children = [self.ln, self.base]
 
     def struct_line(self):
-        return c.linesequence((c.struct((
+        return c.linesequence((c.struct(elems = (
             self.ln.struct_line(),
             c.statement(self.base.decl)
         )), c.statement(self.name)))
@@ -311,14 +311,14 @@ class mc_buffer(custom_type, memory_type):
         seq.append(c.statement(c.subeq(max_len, lenvar)))
         return seq
 
-    def size_line(self, ret, field):
+    def size_line(self, size, src):
         seq = c.sequence()
-        lenvar = c.variable(f'{field}.len')
+        lenvar = c.variable(f'{src}.len')
         if isinstance(self.ln, numeric_type):
-            seq.append(c.statement(c.addeq(ret, self.ln.size)))
+            seq.append(c.statement(c.addeq(size, self.ln.size)))
         else:
-            seq.append(self.ln.size_line(ret, lenvar))
-        seq.append(c.statement(c.addeq(ret, lenvar)))
+            seq.append(self.ln.size_line(size, lenvar))
+        seq.append(c.statement(c.addeq(size, lenvar)))
         return seq
 
     def free_line(self, field):
@@ -332,7 +332,7 @@ class mc_restbuffer(memory_type):
     def dec_line(self, ret, dest, src):
         return c.linecomment('mc_restbuffer dec_line unimplemented')
 
-    def size_line(self, ret, field):
+    def size_line(self, size, src):
         return c.linecomment('mc_restbuffer size_line unimplemented')
 
     def walk_line(self, ret, src, max_len, fail):
@@ -376,7 +376,7 @@ class mc_array(custom_type, memory_type):
 
     def struct_line(self):
         if self.self_contained:
-            return c.linesequence((c.struct((
+            return c.linesequence((c.struct(elems = (
                 self.count.struct_line(),
                 self.base.struct_line()
             )), c.statement(self.name)))
@@ -423,8 +423,32 @@ class mc_array(custom_type, memory_type):
         ))
         return seq
 
-    def size_line(self, ret, field):
-        return c.linecomment('mc_array size_line unimplemented')
+    def size_line(self, size, src):
+        seq = c.sequence()
+        if self.self_contained:
+            countvar = c.variable(f'{src}.count')
+            basevar = c.variable(f'{src}.base')
+            if isinstance(self.count, numeric_type):
+                seq.append(c.statement(c.addeq(size, self.count.size)))
+            else:
+                seq.append(self.count.size_line(size, countvar))
+        else:
+            countvar = c.variable(get_switched_path(self.compare, src, self, False))
+            basevar = c.variable(f'{src}')
+        if hasattr(self.base, 'size') and not self.base.size is None:
+            seq.append(c.statement(c.addeq(
+                size, c.mulop(countvar, self.base.size)
+            )))
+        else:
+            loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
+            basevar = c.variable(f'{basevar}[{loopvar}]')
+            seq.append(c.forloop(
+                c.assign(loopvar.decl, 0),
+                c.lth(loopvar, countvar),
+                c.incop(loopvar),
+                (self.base.size_line(size, basevar),)
+            ))
+        return seq
 
     def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
@@ -554,7 +578,7 @@ class mc_container(custom_type):
 
     def struct_line(self):
         return c.linesequence((
-            c.struct([f.struct_line() for f in self.fields]),
+            c.struct(elems = [f.struct_line() for f in self.fields]),
             c.statement(self.name)
         ))
 
@@ -572,8 +596,23 @@ class mc_container(custom_type):
             seq.append(field.dec_line(ret, v, src))
         return seq
 
-    def size_line(self, ret, field):
-        return c.linecomment('mc_container size_line unimplemented')
+    def size_line(self, size, src):
+        if not self.complex:
+            position, total = group_numerics_size(self.fields, 0)
+            return c.statement(c.addeq(size, total))
+        seq = c.sequence()
+        position = 0
+        endpos = len(self.fields)
+        while(position < endpos):
+            position, total = group_numerics_size(self.fields, position)
+            if total:
+                seq.append(c.statement(c.addeq(size, total)))
+            if position < endpos:
+                field = self.fields[position]
+                position += 1
+                v = c.variable(f'{src}.{field}')
+                seq.append(field.size_line(size, v))
+        return seq
 
     def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
@@ -635,7 +674,7 @@ class mc_option(custom_type):
         self.children.append(self.val)
 
     def struct_line(self):
-        return c.linesequence((c.struct((
+        return c.linesequence((c.struct(elems = (
             self.opt.struct_line(),
             self.val.struct_line()
         )), c.statement(self.name)))
@@ -644,7 +683,7 @@ class mc_option(custom_type):
         seq = c.sequence()
         optvar = c.variable(f'{src}.opt')
         seq.append(self.opt.enc_line(ret, dest, optvar))
-        valvar = c.variable(f'{src}.val', None)
+        valvar = c.variable(f'{src}.val')
         seq.append(c.ifcond(optvar, (self.val.enc_line(ret, dest, valvar),)))
         return seq
 
@@ -652,12 +691,22 @@ class mc_option(custom_type):
         seq = c.sequence()
         optvar = c.variable(f'{dest}.opt')
         seq.append(self.opt.dec_line(ret, optvar, src))
-        valvar = c.variable(f'{dest}.val', None)
+        valvar = c.variable(f'{dest}.val')
         seq.append(c.ifcond(optvar, (self.val.dec_line(ret, valvar, src),)))
         return seq
 
-    def size_line(self, ret, field):
-        return c.linecomment('mc_option size_line unimplemented')
+    def size_line(self, size, src):
+        seq = c.sequence()
+        optvar = c.variable(f'{src}.opt')
+        seq.append(c.statement(c.addeq(size, 1)))
+        valvar = c.variable(f'{src}.val')
+        ifseq = c.ifcond(optvar)
+        seq.append(ifseq)
+        if isinstance(self.val, numeric_type):
+            ifseq.append(c.statement(c.addeq(size, self.val.size)))
+        else:
+            ifseq.append(self.val.size_line(size, valvar))
+        return seq
 
     def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
@@ -677,7 +726,7 @@ class mc_option(custom_type):
             ifseq.append(c.statement(c.addeq(src, self.val.size)))
             ifseq.append(c.statement(c.subeq(max_len, self.val.size)))
         else:
-            ifseq = [self.val.walk_line(ret, src, max_len, fail)]
+            ifseq.append(self.val.walk_line(ret, src, max_len, fail))
             ifseq.append(c.statement(c.addeq(size, ret)))
             ifseq.append(c.statement(c.addeq(src, ret)))
             ifseq.append(c.statement(c.subeq(max_len, ret)))
@@ -710,9 +759,9 @@ def search_fields(name, parent):
         else:
             return None
 
-# ToDo: Is this not checking max_len against size for numeric types?
 def generic_walk_func(app, field, ret, src, max_len, size, fail):
     if isinstance(field, numeric_type):
+        app.append(c.ifcond(c.lth(max_len, field.size), (fail,)))
         app.append(c.statement(c.addeq(size, field.size)))
         app.append(c.statement(c.addeq(src, field.size)))
         app.append(c.statement(c.subeq(max_len, field.size)))
@@ -830,7 +879,7 @@ class mc_switch(custom_type):
         if self.optional:
             return self.fields[0].struct_line()
         return c.linesequence((
-            c.union([f.struct_line() for f in self.fields]),
+            c.union(elems = [f.struct_line() for f in self.fields]),
             c.statement(self.name)
         ))
 
@@ -992,7 +1041,7 @@ class mc_switch(custom_type):
             sw.append(df)
         return sw
 
-    def size_line(self, ret, field):
+    def size_line(self, size, src):
         return c.linecomment('mc_switch size_line unimplemented')
 
     def walk_line(self, ret, src, max_len, size, fail):
@@ -1108,7 +1157,7 @@ class mc_bitfield(custom_type, numeric_type):
 
     def struct_line(self):
         return c.linesequence((
-            c.struct([f.struct_line() for f in self.fields]),
+            c.struct(elems = [f.struct_line() for f in self.fields]),
             c.statement(self.name)
         ))
 
@@ -1136,9 +1185,6 @@ class mc_bitfield(custom_type, numeric_type):
                 f'({self.storage}>>{shift})&{mask}'
             )))
         return seq
-
-    def size_line(self, ret, field):
-        return c.linecomment('mc_bitfield size_line unimplemented')
 
     # Only called if one or more fields are switched on
     def walk_line(self, ret, src, max_len, size, fail):
@@ -1227,7 +1273,7 @@ class packet:
 
     def gen_struct(self):
         return c.typedef(c.struct(
-            [f.struct_line() for f in self.fields]
+            elems = [f.struct_line() for f in self.fields]
         ), self.full_name)
 
     def gen_function_defs(self):
