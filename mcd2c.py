@@ -433,7 +433,7 @@ class mc_array(custom_type, memory_type):
             else:
                 seq.append(self.count.size_line(size, countvar))
         else:
-            countvar = c.variable(get_switched_path(self.compare, src, self, False))
+            countvar = c.variable(get_switched_path(self.compare, src.name, self, False))
             basevar = c.variable(f'{src}')
         if hasattr(self.base, 'size') and not self.base.size is None:
             seq.append(c.statement(c.addeq(
@@ -759,6 +759,12 @@ def search_fields(name, parent):
         else:
             return None
 
+def generic_size_func(app, field, size, src):
+    if isinstance(field, numeric_type):
+        app.append(c.statement(c.addeq(size, field.size)))
+    else:
+        app.append(field.size_line(size, src))
+
 def generic_walk_func(app, field, ret, src, max_len, size, fail):
     if isinstance(field, numeric_type):
         app.append(c.ifcond(c.lth(max_len, field.size), (fail,)))
@@ -957,7 +963,7 @@ class mc_switch(custom_type):
             if self.optional:
                 v = c.variable(src.name)
             else:
-                v = c.variable(f'{src}.{field}')
+                v = c.variable(f'{src}.{self.default_typ}')
             df.append(self.default_typ.enc_line(ret, dest, v))
             sw.append(df)
         return sw
@@ -1004,7 +1010,7 @@ class mc_switch(custom_type):
                     if self.optional:
                         v = c.variable(dest.name)
                     else:
-                        v = c.variable(f'{dest}.{field}')
+                        v = c.variable(f'{dest}.{self.default_typ}')
                     df.append(self.default_typ.dec_line(ret, v, src))
                     sw.append(df)
             return sw
@@ -1036,16 +1042,90 @@ class mc_switch(custom_type):
             if self.optional:
                 v = c.variable(dest.name)
             else:
-                v = c.variable(f'{dest}.{field}')
+                v = c.variable(f'{dest}.{self.default_typ}')
             df.append(self.default_typ.dec_line(ret, v, src))
             sw.append(df)
         return sw
 
     def size_line(self, size, src):
-        return c.linecomment('mc_switch size_line unimplemented')
+        swpath = get_switched_path(self.compare, src.name, self, False)
+        if self.isbool and self.optional:
+            elems = []
+            generic_size_func(elems, self.fields[0], size, src)
+            if self.optional_case:
+                return c.ifcond(swpath, elems)
+            else:
+                return c.wrap(c.ifcond(swpath, elems), True)
+        if not self.string_switch:
+            sw = c.switch(swpath)
+            completed_fields = []
+            for caseval, field in self.map.items():
+                for idx, temp in enumerate(completed_fields):
+                    if field == temp:
+                        sw.insert(idx, c.case(caseval, fall=True))
+                        completed_fields.insert(idx, field)
+                        break
+                else:
+                    cf = c.case(caseval)
+                    if isinstance(field, void_type):
+                        cf.append(c.linecomment('void condition'))
+                    else:
+                        if self.optional:
+                            v = c.variable(src.name)
+                        else:
+                            v = c.variable(f'{src}.{field}')
+                        generic_size_func(cf, field, size, v)
+                    completed_fields.append(field)
+                    sw.append(cf)
+            if self.has_default:
+                for idx, temp in enumerate(completed_fields):
+                    if self.default_typ == temp:
+                        sw.insert(idx, c.defaultcase())
+                        break
+                else:
+                    df = c.defaultcase()
+                    if self.optional:
+                        v = c.variable(src.name)
+                    else:
+                        v = c.variable(f'{src}.{self.default_typ}')
+                    generic_size_func(df, field, size, v)
+                    sw.append(df)
+            return sw
+        first = True
+        sw = c.linesequence()
+        for caseval, field in self.map.items():
+            if not self.has_default and isinstance(field, void_type):
+                continue
+            if first:
+                cf = c.nospace_ifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swpath)
+                ), True))
+                first = False
+            else:
+                cf = c.elifcond(c.wrap(c.fcall(
+                    'sdscmp', 'int', (f'"{caseval}"', swpath)
+                ), True))
+            if isinstance(field, void_type):
+                cf.append(c.linecomment('void condition'))
+            else:
+                if self.optional:
+                    v = c.variable(src.name)
+                else:
+                    v = c.variable(f'{src}.{field}')
+                generic_size_func(cf, field, size, v)
+            sw.append(cf)
+        if self.has_default:
+            df = c.elsecond()
+            if self.optional:
+                v = c.variable(src.name)
+            else:
+                v = c.variable(f'{src}.{self.default_typ}')
+            generic_size_func(df, field, size, v)
+            sw.append(df)
+        return sw
 
     def walk_line(self, ret, src, max_len, size, fail):
-        if not self.string_switch and self.isbool and self.optional:
+        if self.isbool and self.optional:
             elems = []
             generic_walk_func(elems, self.fields[0], ret, src, max_len, size, fail)
             if self.optional_case:
