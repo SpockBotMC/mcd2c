@@ -6,6 +6,9 @@ import cfile as c
 import copy
 
 # General ToDo:
+#   ! Failed allocations in decode functions cannot recover memory. Consider
+#     using calloc and expanding free functions to make 'free_'ing failed
+#     decodes safe or just aborting on failed malloc
 #   ! cfile needs better pointer support
 #   ! cfile's fcall is a constant source of bugs because of the return type
 #     argument being where most cfile classes put their "elems" argument, and
@@ -1164,20 +1167,30 @@ class mc_particledata(custom_type, memory_type):
     typename = 'mc_particle'
     postfix = 'particledata'
 
-    def enc_line(self, ret, dest, src):
-        return c.linecomment('mc_particledata enc_line unimplemented')
+    def __init__(self, name, data, parent):
+        super().__init__(name, data, parent)
+        self.compare = data['compareTo']
+        self.cp_short = to_snake_case(
+            self.compare[self.compare.rfind('/') + 1:]
+        )
+        search_fields(self.cp_short, parent).switched = True
 
     def dec_line(self, ret, dest, src):
-        return c.linecomment('mc_particledata dec_line unimplemented')
+        partvar = c.variable(get_switched_path(self.compare, dest.name, self))
+        return c.statement(c.assign(ret, c.fcall(
+            f'dec_{self.postfix}', 'char *', (f'&{dest.name}', src.name, partvar)
+        )))
 
     def walk_line(self, ret, src, max_len, size, fail):
-        return c.linecomment('mc_particledata walk_line unimplemented')
-
-    def size_line(self, ret, field):
-        return c.linecomment('mc_particledata dec_line unimplemented')
-
-    def free_line(self, field):
-        return c.linecomment('mc_particledata free_line unimplemented')
+        seq = c.sequence()
+        assign = c.wrap(c.assign(ret, c.fcall(
+            f'walk_{self.postfix}', 'int', (src, max_len, self.cp_short)
+        )))
+        seq.append(c.ifcond(c.lth(assign, 0), (fail,)))
+        seq.append(c.statement(c.addeq(size, ret)))
+        seq.append(c.statement(c.addeq(src, ret)))
+        seq.append(c.statement(c.subeq(max_len, ret)))
+        return seq
 
 
 # ToDo: packets are containers with extra steps, we should stop duplicating

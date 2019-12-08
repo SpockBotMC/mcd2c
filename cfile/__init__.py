@@ -272,7 +272,6 @@ class switch(conditional):
         return f'{i}{self.keyword}({self.condition}) {{\n{s}\n{i}}}'
 
 
-
 class case(_block):
     def __init__(self, val, elems=None, fall=False, inner_indent=1, indent=0):
         super().__init__(elems, inner_indent, indent)
