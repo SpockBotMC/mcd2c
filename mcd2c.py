@@ -1524,7 +1524,7 @@ class packet:
         src = c.variable('source', 'char *')
 
         if not self.complex:
-            position, total = group_numerics_size(self.fields, 0)
+            position, total = group_numerics_walk(self.fields, 0)
             return c.linesequence((c.fdecl(
                 f'walk_{self.full_name}', 'int', (src.decl, max_len.decl)
             ), c.block((
@@ -1550,7 +1550,8 @@ class packet:
                     blk.append(c.statement(c.addeq(src, total)))
                     blk.append(c.statement(c.subeq(max_len, total)))
                 else:
-                    del blk[-3:-1]
+                    if not isinstance(blk[-1], c.sequence):
+                        del blk[-3:-1]
                     blk.append(c.returnval(c.addop(size, total)))
             if position < endpos:
                 field = self.fields[position]
