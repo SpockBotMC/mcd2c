@@ -1409,7 +1409,7 @@ class mc_bitfield(custom_type, numeric_type):
         seq.append(c.statement(self.storage.internal.decl))
         seq.append(c.statement(c.addeq(size, self.size)))
         seq.append(c.statement(c.subeq(max_len, self.size)))
-        seq.append(self.storage.dec_line(ret, self.storage, src))
+        seq.append(self.storage.dec_line(src, self.storage, src))
         for idx, field in enumerate(self.fields):
             if not field.switched:
                 continue
@@ -1706,6 +1706,9 @@ def run(version):
 
     impl = c.cfile(version.replace('.', '_') + '_proto.c')
     impl.append(comment)
+    impl.append(c.blank())
+    impl.append(c.include("stdlib.h", True))
+    impl.append(c.include("string.h", True))
     impl.append(c.blank())
     impl.append(c.include(hdr.path))
     impl.append(c.blank())
