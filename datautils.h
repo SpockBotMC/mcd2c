@@ -1,14 +1,16 @@
-#pragma once
+#ifndef DATAUTILS_H
+#define DATAUTILS_H
+
 #include <stdint.h>
 #include "sds.h"
 #include "cNBT/nbt.h"
 
 //Get the size of a member of a structure without instantiating it
-#define ssizeof(X, Y) sizeof(((X ## *)0)-> ## Y)
+#define ssizeof(X, Y) sizeof(((X*)0)->Y)
 
 typedef struct {
-	size_t len;
-	char *base;
+  size_t len;
+  char *base;
 } mc_buffer;
 
 //ProtoDef Numeric Type
@@ -40,8 +42,8 @@ char *dec_buffer(mc_buffer *dest, char *source, size_t len);
 void free_buffer(mc_buffer buffer);
 
 enum {
-	varnum_invalid = -1,
-	varnum_overrun = -2,
+  varnum_invalid = -1,
+  varnum_overrun = -2,
 } varnum_errors;
 
 size_t size_varint(uint32_t varint);
@@ -62,8 +64,8 @@ char *dec_string(sds *dest, char *source);
 
 //Big Endian 128-bit uint
 typedef struct {
-	uint64_t msb;
-	uint64_t lsb;
+  uint64_t msb;
+  uint64_t lsb;
 } mc_uuid;
 
 char *enc_uuid(char *dest, mc_uuid source);
@@ -72,9 +74,9 @@ char *dec_uuid(mc_uuid *dest, char *source);
 //From MSB to LSB x: 26-bits, y: 12-bits, z: 26-bits
 //each is an independent signed 2-complement integer
 typedef struct {
-	int32_t x;
-	int32_t y;
-	int32_t z;
+  int32_t x;
+  int32_t y;
+  int32_t z;
 } mc_position;
 
 char *enc_position(char *dest, mc_position source);
@@ -104,10 +106,10 @@ char *dec_optnbt(nbt_node **dest, char *source);
 
 //Inventory slot
 typedef struct {
-	char present;
-	int32_t id;
-	uint8_t count;
-	nbt_node *nbt;
+  char present;
+  int32_t id;
+  uint8_t count;
+  nbt_node *nbt;
 } mc_slot;
 
 int walk_slot(char *source, size_t max_len);
@@ -118,8 +120,8 @@ void free_slot(mc_slot slot);
 
 //Varint prefixed array of slots
 typedef struct {
-	int32_t count;
-	mc_slot *items;
+  int32_t count;
+  mc_slot *items;
 } mc_ingredient;
 
 int walk_ingredient(char *source, size_t max_len);
@@ -129,11 +131,11 @@ char *dec_ingredient(mc_ingredient *dest, char *source);
 void free_ingredient(mc_ingredient ingredient);
 
 typedef struct {
-	sds group;
-	mc_ingredient ingredient;
-	mc_slot result;
-	float experience;
-	int32_t cooking_time;
+  sds group;
+  mc_ingredient ingredient;
+  mc_slot result;
+  float experience;
+  int32_t cooking_time;
 } mc_smelting;
 
 int walk_smelting(char *source, size_t max_len);
@@ -143,70 +145,70 @@ char *dec_smelting(mc_smelting *dest, char *source);
 void free_smelting(mc_smelting smelting);
 
 typedef enum {
-	particle_ambient_entity_effect,
-	particle_angry_villager,
-	particle_barrier,
-	particle_block,
-	particle_bubble,
-	particle_cloud,
-	particle_crit,
-	particle_damage_indicator,
-	particle_dragon_breath,
-	particle_dripping_lava,
-	particle_dripping_water,
-	particle_dust,
-	particle_effect,
-	particle_elder_guardian,
-	particle_enchanted_hit,
-	particle_enchant,
-	particle_end_rod,
-	particle_entity_effect,
-	particle_explosion_emitter,
-	particle_explosion,
-	particle_falling_dust,
-	particle_firework,
-	particle_fishing,
-	particle_flame,
-	particle_happy_villager,
-	particle_heart,
-	particle_instant_effect,
-	particle_item,
-	particle_item_slime,
-	particle_item_snowball,
-	particle_large_smoke,
-	particle_lava,
-	particle_mycelium,
-	particle_note,
-	particle_poof,
-	particle_portal,
-	particle_rain,
-	particle_smoke,
-	particle_spit,
-	particle_squid_ink,
-	particle_sweep_attack,
-	particle_totem_of_undying,
-	particle_underwater,
-	particle_splash,
-	particle_witch,
-	particle_bubble_pop,
-	particle_current_down,
-	particle_bubble_column_up,
-	particle_nautilus,
-	particle_dolphin
+  particle_ambient_entity_effect,
+  particle_angry_villager,
+  particle_barrier,
+  particle_block,
+  particle_bubble,
+  particle_cloud,
+  particle_crit,
+  particle_damage_indicator,
+  particle_dragon_breath,
+  particle_dripping_lava,
+  particle_dripping_water,
+  particle_dust,
+  particle_effect,
+  particle_elder_guardian,
+  particle_enchanted_hit,
+  particle_enchant,
+  particle_end_rod,
+  particle_entity_effect,
+  particle_explosion_emitter,
+  particle_explosion,
+  particle_falling_dust,
+  particle_firework,
+  particle_fishing,
+  particle_flame,
+  particle_happy_villager,
+  particle_heart,
+  particle_instant_effect,
+  particle_item,
+  particle_item_slime,
+  particle_item_snowball,
+  particle_large_smoke,
+  particle_lava,
+  particle_mycelium,
+  particle_note,
+  particle_poof,
+  particle_portal,
+  particle_rain,
+  particle_smoke,
+  particle_spit,
+  particle_squid_ink,
+  particle_sweep_attack,
+  particle_totem_of_undying,
+  particle_underwater,
+  particle_splash,
+  particle_witch,
+  particle_bubble_pop,
+  particle_current_down,
+  particle_bubble_column_up,
+  particle_nautilus,
+  particle_dolphin
 } particle_type;
 
 typedef struct {
-	int32_t type;
-	union {
-		int32_t block_state;
-		struct {
-			float red;
-			float green;
-			float blue;
-			float scale;
-		};
-		mc_slot item;
-	};
+  int32_t type;
+  union {
+    int32_t block_state;
+    struct {
+      float red;
+      float green;
+      float blue;
+      float scale;
+    };
+    mc_slot item;
+  };
 } mc_particle;
 
 int walk_particledata(char *source, size_t max_len, particle_type type);
@@ -215,55 +217,62 @@ char *enc_particledata(char *dest, mc_particle source);
 char *dec_particledata(mc_particle *dest, char *source, particle_type type);
 void free_particledata(mc_particle particle);
 
+int walk_particle(char *source, size_t max_len);
+size_t size_particle(mc_particle particle);
+char *enc_particle(char *dest, mc_particle source);
+char *dec_particle(mc_particle *dest, char *source);
+#define free_particle free_particledata
+
+
 typedef enum {
-	meta_byte,
-	meta_varint,
-	meta_float,
-	meta_string,
-	meta_chat,
-	meta_optchat,
-	meta_slot,
-	meta_boolean,
-	meta_rotation,
-	meta_position,
-	meta_optposition,
-	meta_direction,
-	meta_optuuid,
-	meta_optblockid,
-	meta_nbt,
-	meta_particle,
-	meta_villagerdata,
-	meta_optvarint,
-	meta_pose
+  meta_byte,
+  meta_varint,
+  meta_float,
+  meta_string,
+  meta_chat,
+  meta_optchat,
+  meta_slot,
+  meta_boolean,
+  meta_rotation,
+  meta_position,
+  meta_optposition,
+  meta_direction,
+  meta_optuuid,
+  meta_optblockid,
+  meta_nbt,
+  meta_particle,
+  meta_villagerdata,
+  meta_optvarint,
+  meta_pose
 } meta_type;
 
 //Just a bitch of a type really
 typedef struct {
-	uint8_t index;
-	int32_t type;
-	char opt;
-	union {
-		int8_t b;
-		int32_t varint;
-		float f;
-		sds string;
-		mc_slot slot;
-		struct {
-			float x;
-			float y;
-			float z;
-		} rot;
-		mc_position pos;
-		mc_uuid uuid;
-		nbt_node *nbt;
-		mc_particle particle;
-		int32_t villagerdata[3];
-	};
+  uint8_t index;
+  int32_t type;
+  char opt;
+  union {
+    int8_t b;
+    int32_t varint;
+    float f;
+    sds string;
+    mc_slot slot;
+    struct {
+      float x;
+      float y;
+      float z;
+    } rot;
+    mc_position pos;
+    mc_uuid uuid;
+    nbt_node *nbt;
+    mc_particle particle;
+    int32_t villagerdata[3];
+  };
 } mc_metatag;
 
 typedef struct {
-	size_t len;
-	mc_metatag *tags;
+  size_t len;
+  mc_metatag *tags;
 } mc_metadata;
 
 size_t count_metatags(char *source);
@@ -274,9 +283,9 @@ char *dec_metadata(mc_metadata *dest, char *source);
 void free_metadata(mc_metadata metadata);
 
 typedef struct {
-	sds name;
-	int32_t len;
-	int32_t *entries;
+  sds name;
+  int32_t len;
+  int32_t *entries;
 } mc_itemtag;
 
 typedef struct {
@@ -291,7 +300,9 @@ char *dec_itemtag_array(mc_itemtag_array *dest, char *source);
 void free_itemtag_array(mc_itemtag_array array);
 
 typedef struct {
-	int id;
-	size_t len;
-	void *data;
+  int id;
+  size_t len;
+  void *data;
 } mc_packet;
+
+#endif
