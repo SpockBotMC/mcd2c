@@ -227,6 +227,13 @@ class enum(blocktype):
             return f'{self.keyword} {self.name} {{\n{inner}\n{i}}}'
         return f'{self.keyword} {{\n{inner}\n{i}}}'
 
+class commablock(blocktype):
+    def __str__(self):
+        for elem in self.elems:
+            elem.indent = self.indent + self._inner_indent
+        inner = ',\n'.join([str(elem) for elem in self.elems])
+        return f'{{\n{inner}\n{self.indent * c_indent_char}}}'
+
 
 class conditional(block):
     keyword = ''

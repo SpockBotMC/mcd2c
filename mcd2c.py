@@ -1690,6 +1690,17 @@ def gen_enums(enums):
                 seq.append(c.blank())
     return seq
 
+def gen_stringtables(sub_stringtables):
+    seq = c.sequence()
+    for state in "handshaking", "status", "login", "play":
+        for direction in "toClient", "toServer":
+            if sub_stringtables[state][direction]:
+                direct = to_snake_case(direction)
+                v = c.variabledecl(f'*{state}_{direct}_strings[]', 'const char')
+                seq.append(c.statement(c.assign(v, sub_stringtables[state][direction])))
+                seq.append(c.blank())
+    return seq
+
 def run(version):
     data = minecraft_data(version).protocol
     hdr = c.hfile(version.replace('.', '_') + '_proto.h')
@@ -1719,10 +1730,15 @@ def run(version):
 
     import operator
     enums = {}
-    for state in "handshaking", "login", "status", "play":
+    main_stringtable = c.commablock()
+    max_table = c.commablock()
+    sub_stringtables = {}
+    for state in "handshaking", "status", "login", "play":
         enums[state] = {}
+        sub_stringtables[state] = {}
         for direction in "toClient", "toServer":
             enums[state][direction] = []
+            sub_stringtables[state][direction] = c.commablock()
             packet_map = data[state][direction]['types']['packet'][1][1]['type'][1]['fields']
             enum_map = data[state][direction]['types']['packet'][1][0]['type'][1]['mappings']
             for name, id in packet_map.items():
@@ -1730,12 +1746,59 @@ def run(version):
                 packets.append(packet.from_proto(state, direction, name, pd))
             temp = [(packet_id, name) for packet_id, name in enum_map.items()]
             temp.sort(key = operator.itemgetter(0))
+            direct = to_snake_case(direction)
             for packet_id, name in temp:
                 enums[state][direction].append(
-                    f'{state}_{to_snake_case(direction)}_{name}_id'
+                    f'{state}_{direct}_{name}_id'
                 )
+                sub_stringtables[state][direction].append(
+                    c.line(f'"{state}_{direct}_{name}"')
+                )
+            if temp:
+                main_stringtable.append(
+                    c.line(f'[{state}_id][{direct}_id] = {state}_{direct}_strings')
+                )
+            max_table.append(
+                c.line(f'[{state}_id][{direct}_id] = {state}_{direct}_max')
+            )
+            enums[state][direction].append(f'{state}_{direct}_max')
 
+    hdr.append(c.statement(c.enum('protocol_direction_id', (
+        c.line('to_client_id'),
+        c.line('to_server_id'),
+        c.line('protocol_direction_max'),
+    ))))
+    hdr.append(c.blank())
+    hdr.append(c.statement(c.enum('protocol_state_id', (
+        c.line('handshaking_id',),
+        c.line('status_id',),
+        c.line('login_id',),
+        c.line('play_id'),
+        c.line('protocol_state_max'),
+    ))))
+    hdr.append(c.blank())
     hdr.append(gen_enums(enums))
+
+
+    impl.append(gen_stringtables(sub_stringtables))
+    impl.append(c.statement(c.assign(c.variabledecl(
+        '**protocol_strings[protocol_state_max][protocol_direction_max]', 'const char'
+    ), main_stringtable)))
+    impl.append(c.blank())
+    impl.append(c.statement(c.assign(c.variabledecl(
+        'protocol_max_ids[protocol_state_max][protocol_direction_max]', 'const int'
+    ), max_table)))
+
+    # ToDo: This is lazy but I'm tired
+    hdr.append(c.statement('extern const char *handshaking_to_server_strings[]'))
+    hdr.append(c.statement('extern const char *status_to_client_strings[]'))
+    hdr.append(c.statement('extern const char *login_to_client_strings[]'))
+    hdr.append(c.statement('extern const char *login_to_server_strings[]'))
+    hdr.append(c.statement('extern const char *play_to_client_strings[]'))
+    hdr.append(c.statement('extern const char *play_to_server_strings[]'))
+    hdr.append(c.statement('extern const char **protocol_strings[protocol_state_max][protocol_direction_max]'))
+    hdr.append(c.statement('extern const int protocol_max_ids[protocol_state_max][protocol_direction_max]'))
+    hdr.append(c.blank())
 
     for p in packets:
         if p.fields:
