@@ -1,6 +1,6 @@
 # Inspired by https://github.com/cogu/cfile
 
-c_indent_char = '\t'
+c_indent_char = '  '
 
 def set_indent_char(char):
     global c_indent_char
@@ -400,6 +400,8 @@ class addeq(operator):
     op = '+='
 class subeq(operator):
     op = '-='
+class noteq(operator):
+    op = '!='
 class eqeq(operator):
     op = '=='
 class lth(operator):

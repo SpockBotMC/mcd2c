@@ -351,12 +351,20 @@ class mc_array(custom_type, memory_type):
         self.children = []
         if 'countType' in data:
             self.self_contained = True
+            self.prefixed = True
             self.external_count = None
             self.count = get_type(data['countType'], 'count', self)
             self.children.append(self.count)
             self.base = get_type(data['type'], '*base', self)
+        elif isinstance(data['count'], int):
+            self.self_contained = True
+            self.prefixed = False
+            self.external_count = None
+            self.count = data['count']
+            self.base = get_type(data['type'], '*base', self)
         else:
             self.self_contained = False
+            self.prefixed = False
             self.compare = data['count']
             self.external_count = search_fields(
                 to_snake_case(data['count']), parent
@@ -379,9 +387,13 @@ class mc_array(custom_type, memory_type):
 
     def struct_line(self):
         if self.self_contained:
+            if self.prefixed:
+                return c.linesequence((c.struct(elems = (
+                    self.count.struct_line(),
+                    self.base.struct_line()
+                )), c.statement(self.name)))
             return c.linesequence((c.struct(elems = (
-                self.count.struct_line(),
-                self.base.struct_line()
+                self.base.struct_line(),
             )), c.statement(self.name)))
         return self.base.struct_line()
 
@@ -390,8 +402,11 @@ class mc_array(custom_type, memory_type):
         loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
         if self.self_contained:
             basevar = c.variable(f'{src}.base')
-            countvar = c.variable(f'{src}.count')
-            seq.append(self.count.enc_line(ret, dest, countvar))
+            if self.prefixed:
+                countvar = c.variable(f'{src}.count')
+                seq.append(self.count.enc_line(ret, dest, countvar))
+            else:
+                countvar = self.count
         else:
             countvar = c.variable(get_switched_path(self.compare, src.name, self, False))
             basevar = c.variable(f'{src}')
@@ -409,8 +424,11 @@ class mc_array(custom_type, memory_type):
         loopvar = c.variable(f'i_{get_depth(self)}', 'size_t')
         if self.self_contained:
             basevar = c.variable(f'{dest}.base')
-            countvar = c.variable(f'{dest}.count')
-            seq.append(self.count.dec_line(ret, countvar, src))
+            if self.prefixed:
+                countvar = c.variable(f'{dest}.count')
+                seq.append(self.count.dec_line(ret, countvar, src))
+            else:
+                countvar = self.count
         else:
             countvar = c.variable(get_switched_path(self.compare, dest.name, self))
             basevar = c.variable(f'{dest}')
@@ -429,12 +447,15 @@ class mc_array(custom_type, memory_type):
     def size_line(self, size, src):
         seq = c.sequence()
         if self.self_contained:
-            countvar = c.variable(f'{src}.count')
             basevar = c.variable(f'{src}.base')
-            if isinstance(self.count, numeric_type):
-                seq.append(c.statement(c.addeq(size, self.count.size)))
+            if self.prefixed:
+                countvar = c.variable(f'{src}.count')
+                if isinstance(self.count, numeric_type):
+                    seq.append(c.statement(c.addeq(size, self.count.size)))
+                else:
+                    seq.append(self.count.size_line(size, countvar))
             else:
-                seq.append(self.count.size_line(size, countvar))
+                countvar = self.count
         else:
             countvar = c.variable(get_switched_path(self.compare, src.name, self, False))
             basevar = c.variable(f'{src}')
@@ -455,8 +476,8 @@ class mc_array(custom_type, memory_type):
 
     def walk_line(self, ret, src, max_len, size, fail):
         seq = c.sequence()
-        if self.self_contained:
-            count_var = c.variable(f'{self.name}_count', self.count.typename)
+        if self.self_contained and self.prefixed:
+            countvar = c.variable(f'{self.name}_count', self.count.typename)
             # Hack for arrays containing arrays
             if self.name == '*base':
                 depth = 0
@@ -464,7 +485,7 @@ class mc_array(custom_type, memory_type):
                 while parent.name == '*base':
                     depth += 1
                     parent = self.parent
-                count_var.name = f'{self.parent.name}{depth}_count'
+                countvar.name = f'{self.parent.name}{depth}_count'
             if isinstance(self.count, numeric_type):
                 seq.append(c.ifcond(c.lth(max_len, self.count.size), (fail,)))
                 seq.append(c.statement(c.addeq(size, self.count.size)))
@@ -473,23 +494,25 @@ class mc_array(custom_type, memory_type):
                 seq.append(self.count.walk_line(ret, src, max_len, fail))
                 seq.append(c.statement(c.addeq(size, ret)))
                 seq.append(c.statement(c.subeq(max_len, ret)))
-            seq.append(c.statement(count_var.decl))
-            seq.append(self.count.dec_line(src, count_var, src))
+            seq.append(c.statement(countvar.decl))
+            seq.append(self.count.dec_line(src, countvar, src))
+        elif self.self_contained and not self.prefixed:
+            countvar = self.count
         else:
-            count_var = self.external_count.internal
+            countvar = self.external_count.internal
         if hasattr(self.base, 'size') and not self.base.size is None:
             seq.append(c.ifcond(
-                c.lth(max_len, c.mulop(count_var, self.base.size)),
+                c.lth(max_len, c.mulop(countvar, self.base.size)),
                 (fail,)
             ))
             seq.append(c.statement(c.addeq(
-                size, c.mulop(count_var, self.base.size)
+                size, c.mulop(countvar, self.base.size)
             )))
             seq.append(c.statement(c.addeq(
-                src, c.mulop(count_var, self.base.size)
+                src, c.mulop(countvar, self.base.size)
             )))
             seq.append(c.statement(c.subeq(
-                max_len, c.mulop(count_var, self.base.size)
+                max_len, c.mulop(countvar, self.base.size)
             )))
         else:
             depth = get_depth(self)
@@ -503,7 +526,7 @@ class mc_array(custom_type, memory_type):
                 forelems.append(c.statement(c.subeq(max_len, ret)))
             seq.append(c.forloop(
                 c.assign(loopvar.decl, 0),
-                c.lth(loopvar, count_var),
+                c.lth(loopvar, countvar),
                 c.incop(loopvar, False),
                 forelems
             ))
@@ -514,7 +537,10 @@ class mc_array(custom_type, memory_type):
         seq = c.sequence()
         if self.self_contained:
             basevar = c.variable(f'{src}.base')
-            countvar = c.variable(f'{src}.count')
+            if self.prefixed:
+                countvar = c.variable(f'{src}.count')
+            else:
+                countvar = self.count
         else:
             countvar = c.variable(get_switched_path(
                 self.compare, src.name, self, False
@@ -907,7 +933,10 @@ class mc_switch(custom_type):
                 self.optional = False
 
         if self.optional:
-            self.optional_case = next(iter(self.map))
+            for k, v in self.map.items():
+                if not (isinstance(v, void_type)):
+                    self.optional_case = k
+                    break;
             self.fields = self.fields[:1]
             self.fields[0].name = self.name
 
@@ -1169,7 +1198,7 @@ class mc_switch(custom_type):
             if self.optional_case:
                 return c.ifcond(self.cp_short, elems)
             else:
-                return c.wrap(c.ifcond(self.cp_short, elems), True)
+                return c.ifcond(c.wrap(self.cp_short, True), elems)
 
         if not self.string_switch:
             sw = c.switch(self.cp_short)
@@ -1675,6 +1704,26 @@ class packet:
             c.fdecl(f'free_{self.full_name}', 'void', (pak.decl,)), blk
         ))
 
+    def gen_generic_decode(self):
+        seq = c.sequence()
+        destvar = c.variable('dest', 'void *')
+        srcvar = c.variable('src', 'char *')
+        lenvar = c.variable('len', 'size_t')
+        if check_instance(self.fields, mc_restbuffer):
+            args = (destvar, srcvar, lenvar)
+        else:
+            args = (destvar, srcvar)
+        seq.append(c.inlineif(
+            c.noteq(c.fcall(f'walk_{self.full_name}', '', (srcvar, lenvar)), lenvar),
+            c.returnval('NULL')
+        ))
+        seq.append(c.inlineif(c.wrap(c.assign(destvar, c.fcall(
+            'malloc', 'void *', (f'sizeof({self.full_name})',)
+        )), True), c.returnval('NULL')))
+        seq.append(c.statement(c.fcall(f'dec_{self.full_name}', '', args)))
+        return seq
+
+
 
 import minecraft_data
 
@@ -1683,7 +1732,7 @@ def gen_enums(enums):
     for state, dir_enum in enums.items():
         for direction, names in dir_enum.items():
             if names:
-                enum = c.enum(f'{state}_{to_snake_case(direction)}_ids')
+                enum = c.enum(f'{state}_{direction.lower()}_ids')
                 for name in names:
                     enum.append(c.line(name))
                 seq.append(c.statement(enum))
@@ -1695,11 +1744,38 @@ def gen_stringtables(sub_stringtables):
     for state in "handshaking", "status", "login", "play":
         for direction in "toClient", "toServer":
             if sub_stringtables[state][direction]:
-                direct = to_snake_case(direction)
+                direct = direction.lower()
                 v = c.variabledecl(f'*{state}_{direct}_strings[]', 'const char')
                 seq.append(c.statement(c.assign(v, sub_stringtables[state][direction])))
                 seq.append(c.blank())
     return seq
+
+def gen_toclient_decode(org_packets):
+    blk = c.block()
+    idvar = c.variable('id', 'int32_t')
+    statevar = c.variable('state', 'int')
+    destvar = c.variable('dest', 'void *')
+    srcvar = c.variable('src', 'char *')
+    lenvar = c.variable('len', 'size_t')
+    blk.append(c.statement(destvar.decl))
+    statesw = c.switch(statevar)
+    blk.append(statesw)
+    for state in 'status', 'login', 'play':
+        statecase = c.case(f'{state}_id')
+        statesw.append(statecase)
+        idsw = c.switch('id')
+        statecase.append(idsw)
+        for packet in org_packets[state]['toClient']:
+            idsw.append(c.case(
+                f'{packet.full_name}_id', packet.gen_generic_decode()
+            ))
+        idsw.append(c.defaultcase((c.returnval('NULL'),)))
+    statesw.append(c.defaultcase((c.returnval('NULL'),)))
+    blk.append(c.returnval(destvar))
+    return c.linesequence((c.fdecl(
+        f'generic_toclient_decode', 'void *',
+        (statevar.decl, idvar.decl, srcvar.decl, lenvar.decl)
+    ), blk))
 
 def run(version):
     data = minecraft_data(version).protocol
@@ -1733,20 +1809,25 @@ def run(version):
     main_stringtable = c.commablock()
     max_table = c.commablock()
     sub_stringtables = {}
+    org_packets = {}
     for state in "handshaking", "status", "login", "play":
         enums[state] = {}
         sub_stringtables[state] = {}
+        org_packets[state] = {}
         for direction in "toClient", "toServer":
             enums[state][direction] = []
             sub_stringtables[state][direction] = c.commablock()
+            org_packets[state][direction] = []
             packet_map = data[state][direction]['types']['packet'][1][1]['type'][1]['fields']
             enum_map = data[state][direction]['types']['packet'][1][0]['type'][1]['mappings']
             for name, id in packet_map.items():
                 pd = data[state][direction]['types'][id]
-                packets.append(packet.from_proto(state, direction, name, pd))
+                pak = packet.from_proto(state, direction, name, pd)
+                packets.append(pak)
+                org_packets[state][direction].append(pak)
             temp = [(packet_id, name) for packet_id, name in enum_map.items()]
             temp.sort(key = operator.itemgetter(0))
-            direct = to_snake_case(direction)
+            direct = direction.lower()
             for packet_id, name in temp:
                 enums[state][direction].append(
                     f'{state}_{direct}_{name}_id'
@@ -1764,8 +1845,8 @@ def run(version):
             enums[state][direction].append(f'{state}_{direct}_max')
 
     hdr.append(c.statement(c.enum('protocol_direction_id', (
-        c.line('to_client_id'),
-        c.line('to_server_id'),
+        c.line('toclient_id'),
+        c.line('toserver_id'),
         c.line('protocol_direction_max'),
     ))))
     hdr.append(c.blank())
@@ -1790,14 +1871,15 @@ def run(version):
     ), max_table)))
 
     # ToDo: This is lazy but I'm tired
-    hdr.append(c.statement('extern const char *handshaking_to_server_strings[]'))
-    hdr.append(c.statement('extern const char *status_to_client_strings[]'))
-    hdr.append(c.statement('extern const char *login_to_client_strings[]'))
-    hdr.append(c.statement('extern const char *login_to_server_strings[]'))
-    hdr.append(c.statement('extern const char *play_to_client_strings[]'))
-    hdr.append(c.statement('extern const char *play_to_server_strings[]'))
+    hdr.append(c.statement('extern const char *handshaking_toserver_strings[]'))
+    hdr.append(c.statement('extern const char *status_toclient_strings[]'))
+    hdr.append(c.statement('extern const char *login_toclient_strings[]'))
+    hdr.append(c.statement('extern const char *login_toserver_strings[]'))
+    hdr.append(c.statement('extern const char *play_toclient_strings[]'))
+    hdr.append(c.statement('extern const char *play_toserver_strings[]'))
     hdr.append(c.statement('extern const char **protocol_strings[protocol_state_max][protocol_direction_max]'))
     hdr.append(c.statement('extern const int protocol_max_ids[protocol_state_max][protocol_direction_max]'))
+    hdr.append(c.statement('void *generic_toclient_decode(int state, int32_t id, char * src, size_t len)'))
     hdr.append(c.blank())
 
     for p in packets:
@@ -1818,6 +1900,8 @@ def run(version):
             if p.need_free:
                 impl.append(c.blank())
                 impl.append(p.gen_freefunc())
+    impl.append(c.blank())
+    impl.append(gen_toclient_decode(org_packets))
 
     fp = open(hdr.path, 'w+')
     fp.write(str(hdr))
@@ -1829,5 +1913,6 @@ def run(version):
 if __name__ == '__main__':
     import sys
     version = sys.argv[1]
+#    version = "1.15.1"
     print('Generating version', version)
     run(version)
