@@ -7,7 +7,7 @@
 * it, you can buy us a beer in return.
 * -----------------------------------------------------------------------------
 */
-#include "buffer.h"
+#include "cNBT/buffer.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -91,4 +91,3 @@ int buffer_append(struct buffer* b, const void* data, size_t n)
 
     return 0;
 }
-

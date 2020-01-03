@@ -7,10 +7,10 @@
  * it, you can buy us a beer in return.
  * -----------------------------------------------------------------------------
  */
-#include "nbt.h"
+#include "cNBT/nbt.h"
 
-#include "buffer.h"
-#include "list.h"
+#include "cNBT/buffer.h"
+#include "cNBT/list.h"
 
 #include <assert.h>
 #include <errno.h>

@@ -7,7 +7,7 @@
  * it, you can buy us a beer in return.
  * -----------------------------------------------------------------------------
  */
-#include "nbt.h"
+#include "cNBT/nbt.h"
 
 #include <string.h>
 
@@ -142,4 +142,3 @@ bool nbt_eq(const nbt_node* restrict a, const nbt_node* restrict b)
         return false;
     }
 }
-
