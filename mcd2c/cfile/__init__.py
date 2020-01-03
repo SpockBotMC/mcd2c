@@ -483,4 +483,5 @@ class hfile(_file):
         t = sequence([indef(self.guard), define(self.guard), blank(2)])
         t.extend(self)
         t.append(endif())
+        t.append(blank())
         return str(t)

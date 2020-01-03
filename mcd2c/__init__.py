@@ -1900,8 +1900,10 @@ def run(version):
             if p.need_free:
                 impl.append(c.blank())
                 impl.append(p.gen_freefunc())
+    hdr.append(c.blank())
     impl.append(c.blank())
     impl.append(gen_toclient_decode(org_packets))
+    impl.append(c.blank())
 
     fp = open(hdr.path, 'w+')
     fp.write(str(hdr))
