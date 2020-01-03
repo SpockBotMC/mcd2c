@@ -2,6 +2,8 @@
 
 Generate C serialization/deserialization code from the minecraft-data protodef protocol spec
 
+Requires the latest git of [python-minecraft-data](https://github.com/SpockBotMC/python-minecraft-data)
+
 ## Usage
 
 `python mcd2c.py [version]`
