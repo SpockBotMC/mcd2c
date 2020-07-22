@@ -156,7 +156,7 @@ void free_buffer(mc_buffer buffer) { free(buffer.base); }
 // will error if the type is invalid, they can't complete the walk, or max_len
 // doesn't have enough room for the calculated size
 size_t size_varint(uint32_t varint) {
-  if(varint < (1 << 8))
+  if(varint < (1 << 7))
     return 1;
   if(varint < (1 << 14))
     return 2;
@@ -201,7 +201,7 @@ char *dec_varint(int32_t *dest, char *source) {
 // Everything past this point isn't part of ProtoDef, just minecraft
 
 size_t size_varlong(uint64_t varint) {
-  if(varint < (1 << 8))
+  if(varint < (1 << 7))
     return 1;
   if(varint < (1 << 14))
     return 2;
